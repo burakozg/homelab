@@ -15,14 +15,17 @@
 # here; if you want a managed one back under your own control, remove it here and
 # delete its frontmatter.
 #
-# Deliberately NO timestamp in the header: a vault synced by iCloud and Obsidian
-# LiveSync would otherwise replicate every note on every run even when nothing
-# changed. Unchanged docs must produce byte-identical files.
+# Deliberately NO timestamp in the header: LiveSync would otherwise replicate
+# every note on every run even when nothing changed. Unchanged docs must
+# produce byte-identical files.
 set -euo pipefail
 
 cd "$(dirname "$0")"
 PROJECTS="$(cd .. && pwd)"
-VAULT="${OBSIDIAN_VAULT:-$HOME/Library/Mobile Documents/iCloud~md~obsidian/Documents/myVault}"
+# The vault moved off iCloud during the 2026-08-31 LiveSync-only migration (see
+# homelab/README.md) — it is now a plain local folder, not under Mobile
+# Documents. Override with OBSIDIAN_VAULT if it lives elsewhere on this Mac.
+VAULT="${OBSIDIAN_VAULT:-$HOME/Documents/obsidian/the_brain}"
 DEST="${VAULT}/30 projects"
 
 CHECK=false
@@ -63,6 +66,8 @@ podcast-digest/DEPLOY-NAS.md|podcast-digest/DEPLOY-NAS.md
 podcast-digest/deploy-out/docker-compose.nas.yml|podcast-digest/docker-compose.yaml.md
 homelab/README.md|homelab/README.md
 clippings-topics/README.md|clippings-topics/README.md
+video-digest/README.md|video-digest/README.md
+video-digest/deploy-out/docker-compose.nas.yml|video-digest/docker-compose.yaml.md
 "
 
 # The real addresses for a project, from its git-ignored .deploy.env.

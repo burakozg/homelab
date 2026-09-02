@@ -18,6 +18,7 @@ docker-compose file, no CI. It's a reference doc plus a directory.
 | **Security Digest** | Fetches security news, summarises and categorises it with an LLM, and delivers curated digests by email on a schedule. | [security-digest](https://github.com/burakozg/security-digest) |
 | **Tasting Log** | Photo/chat capture of whisky, coffee, and other tastings via Claude vision, with lookup and Obsidian sync. | [taster](https://github.com/burakozg/taster) |
 | **Clippings → Topics** | Reads saved web clippings in the Obsidian vault, works out what each is about, and links them into the shared topic pages. | [clippings-topics](https://github.com/burakozg/clippings-topics) |
+| **video-digest** | Takes a video URL, gets the best available transcript, and writes a summarised, timestamped Obsidian note. | [video-digest](https://github.com/burakozg/video-digest) |
 
 (Links assume each repo is published under this name — update if you named
 any of them differently.)
@@ -35,6 +36,8 @@ working around them the same way:
   exit 255. Every project moves files with plain `ssh host "cat > path" <
   local-file` instead, which works everywhere because it's just command
   execution with stdin piped through, not a file-transfer protocol.
+  **Except for live SQLite databases** — see `nas_sqlite_get` below; copying
+  one that way returns a plausible file that is silently missing data.
 - **`docker` isn't on `PATH` for non-interactive SSH sessions** — Container
   Station only wires it in for interactive logins. Scripts address it by
   full path (`/share/CACHEDEV1_DATA/.qpkg/container-station/bin/docker`)
@@ -217,6 +220,41 @@ fetch), the manifest prune that makes a source push a mirror rather than an
 overlay, and the `docker image inspect` after every `docker load`, because
 `docker load` exits 0 after failing mid-stream.
 
+#### `nas_sqlite_get` — the one case `ssh cat` gets wrong
+
+`nas_sqlite_get <container> <db-path-in-container> <local>`. Use it for any
+SQLite database a running container is writing to; never `nas_get`.
+
+Every database here runs in **WAL** mode, where committed transactions live in
+a `-wal` sidecar until a checkpoint folds them into the `.db`. Copying the
+`.db` alone therefore yields a file that opens fine and passes
+`PRAGMA integrity_check` while missing recent writes — sometimes all of them.
+Demonstrated on a database with three committed rows:
+
+```
+live db: .db=4096B  -wal=20632B  (3 rows committed)
+
+naive  ssh cat .db    : integrity=ok   QUERY FAILED — no such table: notes
+safe   nas_sqlite_get : integrity=ok   rows=3
+```
+
+Both report `integrity=ok`. Nothing warns you the copy is empty — and whether
+it is depends on when the last checkpoint happened, so it fails intermittently
+and looks like something else. `nas_get`'s non-empty check cannot catch this:
+the file is 4 KB of valid header, not zero bytes.
+
+The snapshot runs **inside the container** because it cannot run anywhere else:
+this NAS has neither `sqlite3` nor any `python` on the host. The application
+images have python, and SQLite's online backup API takes a consistent snapshot
+while the application keeps writing — no stop, no downtime. Verified against
+vault-ask's live 62 MB index: integrity ok, full row counts, service
+uninterrupted.
+
+Note the redirect-inside-`sh -c` rule applies here as everywhere:
+`docker exec <c> wc -c < /path` resolves the redirect in the *host* shell and
+reports "No such file" for a file that is present in the container. That bug
+was written, and caught, while implementing this function.
+
 ## Config that must never be tracked
 
 Every project's deploy scripts and Docker Compose files read
@@ -231,12 +269,25 @@ time, rather than editing the tracked config directly.
 
 ## Writing into the vault
 
-Four applications now write notes into the same Obsidian vault — `taster`,
-`podcast-digest`, `security-digest` and `clippings-topics` — plus
-`vault-sync.sh` below and the person whose vault it is. They share one file
-whenever a note has to be one node in the graph: a topic page for "Anthropic"
-that several of them describe. Splitting it would put two `anthropic.md` in the
-vault and draw a graph that quietly lies about how much connects.
+**Two vaults now, split 2026-09-02** — same CouchDB server (`taster-couchdb`),
+two databases. `taster`'s content was never related to the other four's, and
+splitting it out cleared the way for a second, non-security use of the same
+sync mechanism (family-calendar's recipes and events). See "The vault split"
+below for why and how; everything in this section applies to either vault, a
+new writer just needs to know which database it's joining.
+
+**Security vault** (db `tastings`) — four applications write notes into it:
+`podcast-digest`, `security-digest`, `clippings-topics` and `video-digest` —
+plus `vault-sync.sh` below and the person whose vault it is. They share one
+file whenever a note has to be one node in the graph: a topic page for
+"Anthropic" that several of them describe. Splitting it would put two
+`anthropic.md` in the vault and draw a graph that quietly lies about how much
+connects.
+
+**Hobby vault** (db `hobby`) — `taster` (tasting notes, `Tastings/`) and
+`family_calendar` (recipes, events, birthdays — `Recipes/`, `Calendar/`), both
+whole-file only. Nothing shared between them, so neither needs an owner tag or
+frontmatter prefix.
 
 The rules are in `~/.claude/skills/obsidian-vault-writer`, and they are not
 optional — a writer that assumes it is alone destroys someone else's work
@@ -247,21 +298,24 @@ against **the vault** rather than its own copy, and never touches an unprefixed
 key like `tags`. `podcast_agent/notes.py` is the reference implementation; the
 other writers carry byte-vendored copies differing only in owner and prefix.
 
-Owner tags in use, so a new writer does not collide:
+Owner tags in use in the security vault, so a new writer does not collide:
 
 | owner tag | frontmatter prefix | writes |
 |---|---|---|
 | `podcast-digest` | `podcasts_` | `11 podcasts/`, `99 topics/` |
 | `security-digest` | `security_` | `99 topics/` and its own digests |
 | `clippings` | `clip_` | `99 topics/` only |
-| *(taster)* | — | `Tastings/`, whole-file |
+| `video-digest` | `video_` | `13 video-summaries/`, `14 video-transcripts/` (whole-file), `99 topics/` |
 | *(vault-sync.sh)* | `source:` | `30 projects/`, whole-file |
+
+The hobby vault's two writers (`taster`, `family_calendar`) don't appear here —
+whole-file ownership on disjoint folders needs no owner tag.
 
 `clippings-topics` also runs the **duplicate reaper** for all of them. The vault
 is replicated twice over — iCloud syncs the folder while LiveSync syncs the same
 notes through CouchDB — so when a server-side writer *creates* a note, a client
 can find the path already taken and Obsidian appends `" 2"`. 54 notes had picked
-one up by 2026-08-26. No writer can prevent it (the copy is made client-side,
+one up by 2026-08-26. No *writer* can prevent it (the copy is made client-side,
 after the write has already succeeded), so it is cleaned up afterwards, and only
 when the copy is **byte-for-byte** its base — `10 raw/` legitimately holds `" 1"`
 and `" 2"` files from the Web Clipper. Run it alone with:
@@ -269,6 +323,121 @@ and `" 2"` files from the Web Clipper. Run it alone with:
 ```sh
 cd ../clippings-topics && python -m clippings_topics --reap-only --dry-run
 ```
+
+It **is** preventable at the device level, though the fix lives outside any
+app: the race needs two things materialising the same new file at once, so
+with exactly one device running the LiveSync client against this vault there
+is nothing left to race — iCloud just propagates what that device wrote out to
+everywhere else.
+
+**A "just uninstall it on N-1 devices" attempt at this failed in practice
+(2026-08-30) and is worth recording so it isn't retried.** Obsidian plugins
+are not an OS/app-level install — they're files under the vault's own
+`.obsidian/plugins/` folder. If iCloud syncs the whole vault folder (it does,
+by default), `.obsidian` syncs too, so uninstalling the plugin on one device
+deletes those files from the *shared* folder every device sees — it
+propagated the removal to every device, including the intended hub. There is
+no supported way to have the plugin present on some devices and absent on
+others while iCloud syncs `.obsidian` for all of them; plugin presence is
+vault content, not device state.
+
+This is also confirmed by the plugin's own documentation, which is more
+direct than this doc used to give it credit for: **"Do not enable this
+plug-in alongside another synchronisation solution (including iCloud and
+Obsidian Sync)."** Combining them was never a supported configuration — the
+duplicate-note race above and the whole-vault plugin deletion are both
+predictable consequences of doing it anyway, not two unrelated bugs.
+
+**Corrected plan: drop iCloud for this vault entirely; LiveSync is the only
+sync mechanism, on every device.** This is what the plugin is actually built
+for (it already covers phone + laptop for the other four apps, with no
+iCloud involved there), and it removes the race at the root rather than
+containing it — with exactly one live sync channel, nothing races. **Done as
+of 2026-09-01** — the Mac and both phones/iPad reconnected via LiveSync
+directly, each bootstrapped through a brand-new empty local vault rather than
+trusting the setup wizard's fetch/merge logic against an already-populated
+one (two open upstream issues, vrtmrz/obsidian-livesync #800 and #607, both
+involve exactly that path silently losing or corrupting content). The reaper
+stays on regardless, as defense-in-depth for the day this gets violated
+again.
+
+## The vault split
+
+`taster`'s content (`Tastings/`) never related to the other four apps' —
+confirmed by an exhaustive grep before splitting it out, zero cross-links
+either direction — so on 2026-09-02 it moved to its own database (`hobby`)
+on the same `taster-couchdb` server, which also became the home for
+`family_calendar`'s new integration (recipes, meal plans, events, birthdays,
+kept live-synced, not a one-off export). A second database on the existing
+server was the low-friction move: no new macvlan IP/MAC to pin, no new
+CORS/LiveSync `.ini` (that config is server-wide, so it already covers
+`hobby` for free), and `backup-vault.sh` needed only a second scheduled
+invocation, not a code change.
+
+Migration: taster's existing `Tastings/` data was copied into `hobby`
+(byte-verified, 68/68 notes identical), taster's live deployment was
+repointed at it (`COUCHDB_DB=hobby`, a new least-privilege member account —
+see "Config that must never be tracked" — rather than the admin account it
+was using before), and only once that was verified did `Tastings/` get
+soft-deleted out of `tastings` — which is what actually made it disappear
+from the security vault on all four devices. The old copy was never touched
+until the new one was confirmed working end to end, same discipline as the
+iCloud migration above.
+
+`family_calendar`'s writer (`backend/vault_writer.py`) is a new,
+from-scratch vault integration — the app had no prior Obsidian/CouchDB code
+at all — vendoring the same chunk+entry LiveSync client every other repo
+carries a copy of. It rebuilds `Recipes/<id>.md` and
+`Calendar/Events.md`/`Calendar/Birthdays.md` whole on every cycle (same
+"rebuilt whole, never appended to" convention `clippings-topics` uses),
+triggered from the app's existing mutation points rather than a new storage
+layer.
+
+## Backing up the vault
+
+LiveSync copies on any device — Mac, phone, iPad — are sync artefacts, not
+backups (`taster/tasting-log-design.md` §7). The vault's CouchDB — now two
+databases, `tastings` (security vault, four apps) and `hobby` (taster +
+family-calendar) on the same server, see "The vault split" above — is the
+one thing here that actually needs a backup story, and until 2026-08-30 it
+didn't have a real one — only an unverified suggestion to fold it into a
+generic QNAP backup job. `backup-vault.sh` replaces that with a tested
+mechanism, modelled on `podcast-digest/scripts/backup.sh`:
+
+```sh
+cd homelab && ./backup-vault.sh                 # tastings -> $VAULT_BACKUP_DIR
+cd homelab && VAULT_DB=hobby ./backup-vault.sh   # hobby -> the same dir
+```
+
+`VAULT_DB` defaults to `tastings` from `.env`, but a pre-exported `VAULT_DB`
+(as the hobby LaunchAgent below sets) wins over `.env`'s value — both
+databases share the same server and admin credentials, so only the database
+name needs to differ between the two scheduled runs.
+
+Deliberately run from the Mac, not the NAS: the vault's CouchDB is
+LAN-reachable directly (unlike podcast-digest's own state DB, which is
+loopback-only on purpose), so the dump is created off the NAS from the start
+— a single NAS disk failure can't take out the live data and its backup
+together. `_all_docs?include_docs=true&attachments=true`, gzip, verified
+non-empty and JSON-valid before the file is published, 14 kept by default.
+Output lands outside the iCloud-synced vault folder (`~/Backups/vault-couchdb`
+by default) — it's an archive, not a live synced folder, and mixing the two
+would risk exactly the kind of sync confusion the section above exists to
+avoid.
+
+Scheduled nightly via two LaunchAgents rather than NAS cron, for the same
+off-NAS reasoning — 15 minutes apart so the two runs don't hit CouchDB at
+once:
+
+| db | LaunchAgent | time |
+|---|---|---|
+| `tastings` | `com.homelab.vault-backup.plist` | 03:30 |
+| `hobby` | `com.homelab.vault-backup-hobby.plist` | 03:45 |
+
+`launchctl list | grep homelab` to check both are loaded, `launchctl start
+com.homelab.vault-backup` (or `-hobby`) to run either on demand. Only fires
+while the Mac is awake; a Mac that's reliably asleep overnight needs either a
+different schedule or `pmset` wake configuration, not covered here yet.
 
 ## The Obsidian vault
 
