@@ -71,6 +71,15 @@ enough that they cost real debugging time across more than one project:
   macvlan address is for the LAN's benefit, not for containers talking to
   each other.
 
+  That is a real observation, but it is not universal, and it is worth
+  knowing which since the alternative is assuming a working path is broken.
+  Measured 2026-09-03: `podcast-agent` reaches `video-digest` at its qnet
+  address, macvlan-to-macvlan on this host, 12 connections out of 12, median
+  0.5 ms — the first one costing ~113 ms while ARP resolves. So this pair
+  works and the `video_digest` import (below) depends on it. Test the actual
+  pair before designing around the warning; if one does fail, the fix is to
+  put both containers on a shared bridge, not to give up on the integration.
+
 ## Keeping the NAS off the public internet
 
 None of these services port-forward anything. Three different patterns
@@ -310,6 +319,33 @@ Owner tags in use in the security vault, so a new writer does not collide:
 
 The hobby vault's two writers (`taster`, `family_calendar`) don't appear here —
 whole-file ownership on disjoint folders needs no owner tag.
+
+### One app reading another: podcast-digest ← video-digest
+
+The only service-to-service link between these projects, and the one place a
+note deliberately does **not** get written twice. `video-digest` summarises a
+video and writes `13 video-summaries/<video>.md` itself. The vault is a fine
+place to keep that and a poor place to work through it — nothing there records
+what has been read — so `podcast-digest` mirrors the summaries in as read-only
+episodes and lends them its console: read/unread, starring, search.
+
+It pulls rather than being pushed, over `GET /videos` on video-digest with its
+admin key (podcast-digest's own CouchDB is bound to loopback on purpose, so
+nothing outside the NAS host can write to it). Imported episodes carry
+`origin: "imported"` and a terminal `IMPORTED` status, which keeps them out of
+every pipeline stage, the weekly digest, the narration — **and out of both of
+podcast-digest's vault writers**. That last one is the point: video-digest has
+already written the note, and a second copy from a different owner tag is
+exactly the collision the rules above exist to prevent. Each summary is in the
+vault once, written by one application.
+
+Configured on the NAS in podcast-digest's `.env`
+(`PODAGENT_VIDEO_DIGEST__ENABLED`, `__BASE_URL`, `PODAGENT_VIDEO_DIGEST_API_KEY`)
+and forwarded by its `docker-compose.yml`. Both halves are needed: that compose
+file passes an explicit allowlist rather than an `env_file:`, so a variable set
+in `.env` but missing from the allowlist is silently inert — the app boots
+normally with the feature switched off and nothing in any log says why. This is
+how the integration first shipped disabled.
 
 `clippings-topics` also runs the **duplicate reaper** for all of them. The vault
 is replicated twice over — iCloud syncs the folder while LiveSync syncs the same
