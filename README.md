@@ -476,6 +476,61 @@ com.homelab.vault-backup` (or `-hobby`) to run either on demand. Only fires
 while the Mac is awake; a Mac that's reliably asleep overnight needs either a
 different schedule or `pmset` wake configuration, not covered here yet.
 
+## Is everything fine?
+
+`./status.sh` answers that in one place, from the Mac. It collects into
+`~/.homelab/status/snapshot.json` and renders `status.html` beside it.
+
+```sh
+./status.sh            # collect the fast signals, render, print the summary
+./status.sh --slow     # test suites and outdated packages (minutes)
+./status.sh --print    # the last snapshot, instantly, with no network
+```
+
+Two tiers, because they cost different amounts. **Fast** (~10 s, every 30 min
+via `com.homelab.status-fast`): each app's own health endpoint, container state
+and restart counts, how far the running image is behind the repo, config drift
+on the NAS, backup ages, and the vault's document counts, conflicts and
+duplicates. **Slow** (minutes, daily 04:00 via `com.homelab.status-slow`): every
+repo's test suite and its outdated packages, cached with its own timestamp.
+
+Three properties are deliberate, and each exists because of a specific way this
+kind of tool goes wrong:
+
+- **It runs on the Mac, and has to.** The source-side signals — tests, unpushed
+  work, outdated packages, the commit a running image was built from — exist
+  nowhere else, and the NAS host cannot reach its own macvlan children to probe
+  them. A collector on the NAS could not see half the board.
+- **Every section carries its own timestamp, and a stale one is drawn in red.**
+  The failure mode of a dashboard is not being wrong, it is being old while
+  looking current — turning "not checked since Tuesday" into a reassurance.
+- **One unreachable app degrades its own row and the run still exits 0.** A
+  collector that aborts on the first problem is useless on the day it is needed.
+
+### Knowing what is actually deployed
+
+The image tags here are static (`podcast-agent:1.0.0`), so a tag says which
+project an image belongs to and nothing about which source built it. Every build
+is now stamped by `nas_build_labels` in `deploy.lib.sh` with
+`org.opencontainers.image.revision`, and the collector compares that against the
+repo's `HEAD` — so "is the NAS running my current code?" is answered rather than
+inferred from timestamps. A tree with uncommitted changes is labelled
+`<sha>-dirty` rather than being cleaned up or refused; shipping uncommitted work
+is normal here, and quietly labelling it with the last commit's sha would be the
+actual lie.
+
+An app that has not been deployed since this landed reports `unknown — redeploy
+to enable`, which is the honest answer and not a failure.
+
+### What it cannot do
+
+**The page cannot refresh itself.** It is published as an Artifact, and that
+needs a session — a LaunchAgent cannot do it, and the artifact sandbox blocks
+the page from fetching the NAS directly. So the snapshot is always current and
+the *page* is current as of its last publish, which it states plainly at the
+top. `./status.sh --print` is the always-fresh view.
+
+
 ## The Obsidian vault
 
 `vault-sync.sh` pushes these projects' main docs into the Obsidian vault's
