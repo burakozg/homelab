@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Back up the vault's CouchDB database — the `tastings` db every app's
+# Back up the vault's CouchDB database — the `the_brain` db every app's
 # VAULT_* variables point at, and the one thing here that actually matters:
 # LiveSync copies on any device are sync artifacts, not backups (see
 # taster/INSTALL.md and tasting-log-design.md §7). Losing this loses every
@@ -18,7 +18,7 @@
 #
 # Reads VAULT_COUCHDB_URL / VAULT_DB / VAULT_USER / VAULT_COUCHDB_PASSWORD /
 # VAULT_BACKUP_DIR from .env (see .env.example) so nothing real lives in this
-# tracked file. VAULT_DB defaults to `tastings`, but a caller that already
+# tracked file. VAULT_DB defaults to `the_brain`, but a caller that already
 # exported VAULT_DB (the hobby-vault LaunchAgent, say) wins over .env's own
 # value -- both databases share the same server/admin creds, so only the
 # database name needs to differ between the two scheduled backups.
@@ -33,7 +33,7 @@ _preset_vault_db="${VAULT_DB:-}"
 OUT_DIR="${1:-${VAULT_BACKUP_DIR:-$HOME/Backups/vault-couchdb}}"
 COUCHDB_URL="${VAULT_COUCHDB_URL:?Set VAULT_COUCHDB_URL in .env}"
 COUCHDB_USER="${VAULT_USER:?Set VAULT_USER in .env}"
-COUCHDB_DB="${VAULT_DB:-tastings}"
+COUCHDB_DB="${VAULT_DB:-the_brain}"
 KEEP="${KEEP:-14}"
 
 if [ -z "${VAULT_COUCHDB_PASSWORD:-}" ]; then

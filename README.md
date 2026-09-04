@@ -285,7 +285,7 @@ sync mechanism (family-calendar's recipes and events). See "The vault split"
 below for why and how; everything in this section applies to either vault, a
 new writer just needs to know which database it's joining.
 
-**Security vault** (db `tastings`) — four applications write notes into it:
+**Security vault** (db `the_brain`) — four applications write notes into it:
 `podcast-digest`, `security-digest`, `clippings-topics` and `video-digest` —
 plus `vault-sync.sh` below and the person whose vault it is. They share one
 file whenever a note has to be one node in the graph: a topic page for
@@ -415,7 +415,8 @@ Migration: taster's existing `Tastings/` data was copied into `hobby`
 repointed at it (`COUCHDB_DB=hobby`, a new least-privilege member account —
 see "Config that must never be tracked" — rather than the admin account it
 was using before), and only once that was verified did `Tastings/` get
-soft-deleted out of `tastings` — which is what actually made it disappear
+soft-deleted out of `tastings` (renamed `the_brain` on 2026-09-04, once it no
+longer held any tasting) — which is what actually made it disappear
 from the security vault on all four devices. The old copy was never touched
 until the new one was confirmed working end to end, same discipline as the
 iCloud migration above.
@@ -433,7 +434,7 @@ layer.
 
 LiveSync copies on any device — Mac, phone, iPad — are sync artefacts, not
 backups (`taster/tasting-log-design.md` §7). The vault's CouchDB — now two
-databases, `tastings` (security vault, four apps) and `hobby` (taster +
+databases, `the_brain` (security vault, four apps) and `hobby` (taster +
 family-calendar) on the same server, see "The vault split" above — is the
 one thing here that actually needs a backup story, and until 2026-08-30 it
 didn't have a real one — only an unverified suggestion to fold it into a
@@ -441,11 +442,11 @@ generic QNAP backup job. `backup-vault.sh` replaces that with a tested
 mechanism, modelled on `podcast-digest/scripts/backup.sh`:
 
 ```sh
-cd homelab && ./backup-vault.sh                 # tastings -> $VAULT_BACKUP_DIR
+cd homelab && ./backup-vault.sh                 # the_brain -> $VAULT_BACKUP_DIR
 cd homelab && VAULT_DB=hobby ./backup-vault.sh   # hobby -> the same dir
 ```
 
-`VAULT_DB` defaults to `tastings` from `.env`, but a pre-exported `VAULT_DB`
+`VAULT_DB` defaults to `the_brain` from `.env`, but a pre-exported `VAULT_DB`
 (as the hobby LaunchAgent below sets) wins over `.env`'s value — both
 databases share the same server and admin credentials, so only the database
 name needs to differ between the two scheduled runs.
@@ -467,7 +468,7 @@ once:
 
 | db | LaunchAgent | time |
 |---|---|---|
-| `tastings` | `com.homelab.vault-backup.plist` | 03:30 |
+| `the_brain` | `com.homelab.vault-backup.plist` | 03:30 |
 | `hobby` | `com.homelab.vault-backup-hobby.plist` | 03:45 |
 
 `launchctl list | grep homelab` to check both are loaded, `launchctl start
