@@ -10,7 +10,7 @@ from __future__ import annotations
 import sys
 
 from collect import SNAPSHOT, load
-from render import _age, _attention
+from render import _age, _attention, health_verdict
 
 BOLD, DIM, RESET = "\033[1m", "\033[2m", "\033[0m"
 RED, YELLOW, GREEN = "\033[31m", "\033[33m", "\033[32m"
@@ -42,7 +42,11 @@ def main() -> int:
         elif h.get("ok"):
             hs, tone = "healthy", GREEN
         else:
-            hs, tone = (h.get("error") or "degraded"), RED
+            # Same verdict the page uses, so the two never disagree about
+            # whether an app is down or merely busy.
+            verdict = health_verdict(a)
+            hs = "not responding" if verdict and verdict[0] == "warn" else (h.get("error") or "degraded")
+            tone = YELLOW if verdict and verdict[0] == "warn" else RED
         state = box.get("state", "absent")
         box_tone = GREEN if state == "running" else RED
         notes = []

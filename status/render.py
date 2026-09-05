@@ -59,7 +59,9 @@ def _app_rows(fast: dict[str, Any]) -> str:
         elif health.get("ok"):
             hchip = _chip("healthy", "good")
         else:
-            hchip = _chip(health.get("error") or "degraded", "bad")
+            verdict = health_verdict(a)
+            tone = verdict[0] if verdict else "bad"
+            hchip = _chip("not responding" if tone == "warn" else (health.get("error") or "degraded"), tone)
 
         state = box.get("state", "absent")
         schip = _chip(state, "good" if state == "running" else "bad")
@@ -135,6 +137,25 @@ def _backup_rows(fast: dict[str, Any]) -> str:
     return "\n".join(rows)
 
 
+#: A probe that timed out against a *running* container is a different fact
+#: from one that was refused. vault-ask rebuilds its whole index on start and
+#: stalls its event loop for minutes — answering 200 in its own log while every
+#: probe here times out. Calling that "unhealthy" in red, every time it
+#: restarts, is how a page teaches you to scroll past red.
+def health_verdict(app: dict[str, Any]) -> tuple[str, str] | None:
+    """(tone, description), or None when the app is fine or has no endpoint."""
+    health = app.get("health") or {}
+    if not health.get("probed") or health.get("ok"):
+        return None
+    running = (app.get("container") or {}).get("state") == "running"
+    error = str(health.get("error") or "")
+    if running and "Timeout" in error:
+        return ("warn", "not responding — busy or wedged, container is up")
+    if health.get("failing_checks"):
+        return ("bad", "reports " + ", ".join(health["failing_checks"]) + " failing")
+    return ("bad", f"unhealthy — {error or 'check failed'}")
+
+
 def _feed_alerts(extra: dict[str, Any]) -> list[tuple[str, str]]:
     """Feeds that are actually broken, not ones that had a bad afternoon.
 
@@ -184,9 +205,10 @@ def _attention(fast: dict[str, Any], slow: dict[str, Any]) -> list[tuple[str, st
     """
     out: list[tuple[str, str]] = []
     for name, a in sorted(fast.get("apps", {}).items()):
-        h, box = a.get("health") or {}, a.get("container") or {}
-        if h.get("probed") and not h.get("ok"):
-            out.append(("bad", f"{name} is unhealthy — {h.get('error') or 'check failed'}"))
+        box = a.get("container") or {}
+        if verdict := health_verdict(a):
+            tone, description = verdict
+            out.append((tone, f"{name} {description}"))
         if box.get("state") not in ("running", None):
             out.append(("bad", f"{name} container is {box.get('state')}"))
         if (a.get("config") or {}).get("state") == "drifted":

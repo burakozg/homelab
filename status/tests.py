@@ -152,6 +152,38 @@ class TestHealthVocabulary(unittest.TestCase):
         self.assertEqual(bad, ["vault"])
 
 
+class TestBusyIsNotDown(unittest.TestCase):
+    """vault-ask stalls for minutes rebuilding its index on every restart,
+    answering 200 in its own log while every probe times out. Flagging that red
+    each time is how a page teaches you to scroll past red."""
+
+    def _app(self, error, state="running"):
+        return {"health": {"probed": True, "ok": False, "error": error}, "container": {"state": state}}
+
+    def test_a_timeout_on_a_running_container_is_a_warning(self) -> None:
+        tone, text = render.health_verdict(self._app("TimeoutError"))
+        self.assertEqual(tone, "warn")
+        self.assertIn("busy", text)
+
+    def test_a_refused_connection_is_an_error(self) -> None:
+        tone, _ = render.health_verdict(self._app("URLError"))
+        self.assertEqual(tone, "bad")
+
+    def test_a_timeout_on_a_stopped_container_is_an_error(self) -> None:
+        tone, _ = render.health_verdict(self._app("TimeoutError", state="exited"))
+        self.assertEqual(tone, "bad")
+
+    def test_a_reported_failing_subsystem_is_an_error(self) -> None:
+        app = {"health": {"probed": True, "ok": False, "failing_checks": ["vault"]},
+               "container": {"state": "running"}}
+        tone, text = render.health_verdict(app)
+        self.assertEqual(tone, "bad")
+        self.assertIn("vault", text)
+
+    def test_a_healthy_app_says_nothing(self) -> None:
+        self.assertIsNone(render.health_verdict({"health": {"probed": True, "ok": True}}))
+
+
 class TestFreshnessIsLoud(unittest.TestCase):
     """The failure mode of a dashboard is being old while looking current."""
 
