@@ -41,6 +41,13 @@ pick_python() {
 PY="$(pick_python)"
 DIR="${HOMELAB_STATUS_DIR:-$HOME/.homelab/status}"
 
+# Both LaunchAgents append here, ~1 KB a run, 48 runs a day. Left alone that is
+# a log growing forever to hold a summary nobody reads twice, so keep the tail.
+LOG="${DIR}/collect.log"
+if [ -f "$LOG" ] && [ "$(wc -c < "$LOG")" -gt 262144 ]; then
+  tail -n 400 "$LOG" > "${LOG}.tmp" && mv "${LOG}.tmp" "$LOG"
+fi
+
 case "${1:-}" in
   --slow)  exec "$PY" status/collect.py --slow ;;
   --print) exec "$PY" status/summary.py ;;

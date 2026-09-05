@@ -2,3 +2,9 @@
 .claude/settings.local.json
 .env
 .hobby-migration.env
+
+# Python bytecode. status/ is the only Python here, and three .pyc files were
+# committed with it — they change on every run, so they show as uncommitted
+# work forever and make `git status` useless as a signal.
+__pycache__/
+*.py[cod]
