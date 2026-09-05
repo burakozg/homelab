@@ -521,6 +521,62 @@ def vault() -> dict[str, Any]:
 _PYTEST = re.compile(r"(?:(\d+) failed[^\n]*?)?(\d+) passed(?:[^\n]*?(\d+) skipped)?")
 
 
+#: What each tracked extension counts as. Documentation is counted, but
+#: separately: these repos carry a lot of it, so folding it into "code" would
+#: flatter the number and dropping it would misrepresent the work.
+_LANGUAGES = {
+    ".py": "Python", ".sh": "Shell", ".js": "JavaScript", ".html": "HTML",
+    ".css": "CSS", ".yaml": "YAML", ".yml": "YAML", ".toml": "TOML",
+    ".sql": "SQL", ".swift": "Swift",
+}
+_DOCS = {".md": "Markdown"}
+
+
+def code_stats(app: App) -> dict[str, Any]:
+    """Lines of tracked source in a repo, by language.
+
+    Counted from `git ls-files`, so .gitignore does the exclusion work for free
+    — no venv, no lockfile, no rendered deploy output, no build artefact. What
+    is counted is exactly what is committed.
+    """
+    path = registry.repo_path(app)
+    if not (path / ".git").exists():
+        return {"counted": False, "reason": "not a git repository"}
+    rc, out = _run(["git", "ls-files", "-z"], cwd=path, timeout=60)
+    if rc != 0:
+        return {"counted": False, "reason": "git ls-files failed"}
+    by_language: dict[str, int] = {}
+    docs = files = 0
+    for name in out.split("\0"):
+        if not name:
+            continue
+        ext = name[name.rfind(".") :] if "." in name else ""
+        if lang := _LANGUAGES.get(ext):
+            try:
+                with (path / name).open("rb") as handle:
+                    lines = sum(1 for _ in handle)
+            except OSError:
+                continue
+            by_language[lang] = by_language.get(lang, 0) + lines
+            files += 1
+        elif ext in _DOCS:
+            try:
+                with (path / name).open("rb") as handle:
+                    docs += sum(1 for _ in handle)
+            except OSError:
+                continue
+    return {
+        "counted": True,
+        "code": sum(by_language.values()),
+        "docs": docs,
+        "files": files,
+        # Insertion order is not preserved: the snapshot is written with
+        # sort_keys=True, which re-sorts this alphabetically. Ordering by size
+        # is presentation, so the renderer does it.
+        "by_language": by_language,
+    }
+
+
 def run_tests(app: App) -> dict[str, Any]:
     path = registry.repo_path(app)
     pytest = path / (app.venv or "") / "bin" / "pytest" if app.venv else None
@@ -604,10 +660,20 @@ def collect_fast() -> dict[str, Any]:
 def collect_slow() -> dict[str, Any]:
     tests: dict[str, Any] = {}
     packages: dict[str, Any] = {}
+    code: dict[str, Any] = {}
     for app in APPS:
         tests[app.name] = run_tests(app)
         packages[app.name] = outdated(app)
-    return {"collected_at": now(), "tests": tests, "packages": packages}
+        # Cheap (a fifth of a second a repo), but it belongs with the other
+        # source-side signals: one table, one tier, one timestamp.
+        code[app.name] = code_stats(app)
+    # homelab is not a deployed app, so it is absent from APPS — but it holds
+    # the deploy contract, the backup and vault-sync jobs and this collector,
+    # and a total that left it out would not be the total.
+    code["homelab (tooling)"] = code_stats(
+        App(name="homelab", repo="homelab", container="-")
+    )
+    return {"collected_at": now(), "tests": tests, "packages": packages, "code": code}
 
 
 def _read(path: Path) -> dict[str, Any]:

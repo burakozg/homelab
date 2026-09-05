@@ -292,6 +292,9 @@ def render(snapshot: dict[str, Any]) -> str:
     passed = sum(t.get("passed") or 0 for t in tests.values() if t.get("ran"))
     failed = sum(t.get("failed") or 0 for t in tests.values() if t.get("ran"))
     pkgs = sum((p.get("count") or 0) for p in (slow.get("packages") or {}).values())
+    code_by_repo = slow.get("code") or {}
+    total_code = sum(c.get("code") or 0 for c in code_by_repo.values() if c.get("counted"))
+    total_docs = sum(c.get("docs") or 0 for c in code_by_repo.values() if c.get("counted"))
 
     # `info` lines are context, so a page carrying only those still reads as
     # good — otherwise every transient blip permanently downgrades the verdict.
@@ -315,7 +318,7 @@ def render(snapshot: dict[str, Any]) -> str:
     vault_rows = _vault_rows(fast) or '<tr><td colspan="4" class="none">vault not reachable</td></tr>'
 
     test_rows = []
-    for name in sorted(set(tests) | set(slow.get("packages") or {})):
+    for name in sorted(set(tests) | set(slow.get("packages") or {}) | set(code_by_repo)):
         t = tests.get(name, {})
         p = (slow.get("packages") or {}).get(name, {})
         if t.get("ran"):
@@ -332,8 +335,16 @@ def render(snapshot: dict[str, Any]) -> str:
             if p.get("checked")
             else _chip("—", "muted")
         )
+        c = code_by_repo.get(name) or {}
+        if c.get("counted"):
+            top = sorted((c.get("by_language") or {}).items(), key=lambda kv: -kv[1])[:2]
+            langs = " · ".join(f"{lang} {n:,}" for lang, n in top)
+            code_cell = f"{c['code']:,}<small>{e(langs)}</small>"
+        else:
+            code_cell = '<span class="none">—</span>'
         test_rows.append(
-            f'<tr><th scope="row">{e(name)}</th><td>{cell}{dur}</td><td>{pkg}</td></tr>'
+            f'<tr><th scope="row">{e(name)}</th><td>{code_cell}</td>'
+            f"<td>{cell}{dur}</td><td>{pkg}</td></tr>"
         )
 
     return f"""<title>Homelab Status</title>
@@ -404,9 +415,10 @@ footer code{{font-family:"IBM Plex Mono",monospace;color:var(--ink-2);}}
   </div>
   <div class="freshness">
     <div class="{'stale' if fast_stale else ''}"><span>live signals</span><b>{e(fast_age)}</b></div>
-    <div class="{'stale' if slow_stale else ''}"><span>tests &amp; packages</span><b>{e(slow_age)}</b></div>
+    <div class="{'stale' if slow_stale else ''}"><span>source scan</span><b>{e(slow_age)}</b></div>
     <div><span>healthy / running</span><b>{healthy}/{len(apps)} · {running}/{len(apps)}</b></div>
     <div><span>tests</span><b>{passed:,} pass{f' · {failed} fail' if failed else ''}</b></div>
+    <div><span>lines of code</span><b>{total_code:,}</b></div>
   </div>
 </header>
 
@@ -449,11 +461,11 @@ footer code{{font-family:"IBM Plex Mono",monospace;color:var(--ink-2);}}
 </div>
 
 <section class="scroll">
-  <h2>Tests and dependencies <em>{e(slow_age)}{' — stale' if slow_stale else ''}</em></h2>
+  <h2>Source, tests and dependencies <em>{e(slow_age)}{' — stale' if slow_stale else ''}</em></h2>
   <table>
-    <thead><tr><th>repo</th><th>suite</th><th>packages</th></tr></thead>
+    <thead><tr><th>repo</th><th>lines of code</th><th>suite</th><th>packages</th></tr></thead>
     <tbody>
-{chr(10).join(test_rows) or '<tr><td colspan="3" class="none">no slow run recorded yet</td></tr>'}
+{chr(10).join(test_rows) or '<tr><td colspan="4" class="none">no slow run recorded yet</td></tr>'}
     </tbody>
   </table>
 </section>
@@ -464,6 +476,10 @@ footer code{{font-family:"IBM Plex Mono",monospace;color:var(--ink-2);}}
   30&nbsp;minutes; tests and package checks run daily and are cached, so each carries its own
   timestamp above. <strong>An age shown in red means the collector has not run, not that the
   value is bad.</strong> Package counts are outdated-versions, not vulnerabilities.
+  Line counts come from <code>git ls-files</code>, so they are what is committed — no
+  dependencies, no lockfiles, no build output — and exclude {total_docs:,} lines of Markdown
+  counted separately. <code>deploy.lib.sh</code> is vendored byte-identically into every
+  repo, so its ~500 lines are counted once per repo rather than deduplicated.
 </footer>
 </div>
 """
