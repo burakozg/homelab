@@ -47,7 +47,11 @@ FAST_FILE = STATUS_DIR / "fast.json"
 SLOW_FILE = STATUS_DIR / "slow.json"
 SNAPSHOT = FAST_FILE  # what --print and the renderer report as the source
 
-HTTP_TIMEOUT = 6
+#: Health probes. Generous on purpose: vault-ask re-ingests the whole vault when
+#: it changes and its event loop stalls for tens of seconds — it answered 200 in
+#: its own log while a 6 s probe here recorded it as unhealthy. A timeout should
+#: mean "not answering", not "busy".
+HTTP_TIMEOUT = 20
 SSH_TIMEOUT = 25
 #: Per-suite ceiling. The slowest real suite is podcast-digest at ~90 s, so this
 #: is generous — it exists to bound a *hung* suite, not a slow one, and
