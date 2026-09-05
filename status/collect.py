@@ -231,6 +231,99 @@ def image_labels(host: str, port: str, tags: list[str]) -> dict[str, dict[str, s
     return labels
 
 
+#: Env names the apps use for "which vault database". They do not agree, and
+#: asking them to would be a bigger change than reading all three.
+_VAULT_DB_VARS = ("VAULT_DB", "PODAGENT_VAULT__DB", "VIDEODIGEST_VAULT__DB", "COUCHDB_DB")
+
+
+def vault_db_check(
+    app: App, env_lines: list[str], config_db: str | None = None
+) -> dict[str, Any] | None:
+    """Is this app writing to the database we think it is?
+
+    Worth a check of its own because the failure is invisible from every other
+    angle: security-digest kept writing to `tastings` for three days after the
+    rename, healthy the whole time, its notes landing in a database no device
+    reads any more. Health was green, the container was up, the job succeeded.
+    Only the destination was wrong.
+    """
+    if not app.expect_vault_db:
+        return None
+    found = {}
+    for line in env_lines:
+        name, _, value = line.partition("=")
+        if name in _VAULT_DB_VARS and value:
+            found[name] = value
+    if not found and config_db:
+        # video-digest and vault-ask take it from their shipped config.yaml
+        # rather than the environment. Same question, different place to look —
+        # and leaving them unchecked would put a hole in the one check added
+        # because a destination went wrong unnoticed.
+        found = {f"{app.shipped_config}:db": config_db}
+    if not found:
+        return {"state": "unknown", "reason": "no vault database setting found"}
+    wrong = {k: v for k, v in found.items() if v != app.expect_vault_db}
+    if wrong:
+        return {"state": "wrong", "expected": app.expect_vault_db, "found": wrong}
+    return {"state": "ok", "database": app.expect_vault_db}
+
+
+def container_envs(host: str, port: str, names: list[str]) -> dict[str, list[str]]:
+    """Each container's environment, for the vault-destination check.
+
+    Only the variables that name a database are kept — nothing here should be
+    holding a container's secrets in a file that gets rendered to a page.
+    """
+    if not names:
+        return {}
+    docker = "/share/CACHEDEV1_DATA/.qpkg/container-station/bin/docker"
+    script = "; ".join(
+        f"printf '%s|' '{n}'; {docker} inspect '{n}' "
+        f"--format '{{{{join .Config.Env \",\"}}}}' 2>/dev/null || echo ''"
+        for n in names
+    )
+    rc, out = _run(["ssh", "-p", port, "-o", "BatchMode=yes", host, script], timeout=SSH_TIMEOUT)
+    if rc != 0:
+        return {}
+    envs: dict[str, list[str]] = {}
+    for line in out.splitlines():
+        name, _, joined = line.partition("|")
+        keep = [
+            v
+            for v in joined.split(",")
+            if v.partition("=")[0] in _VAULT_DB_VARS
+        ]
+        envs[name.strip()] = keep
+    return envs
+
+
+def shipped_config_db(app: App, host: str, port: str) -> str | None:
+    """The `db:` line from the config.yaml actually on the NAS."""
+    if not (app.shipped_config and app.app_dir):
+        return None
+    docker = "/share/CACHEDEV1_DATA/.qpkg/container-station/bin/docker"
+    # The bind-mounted copy where there is one, otherwise the copy inside the
+    # container — vault-ask bakes its config into the image, and a check that
+    # skipped it would leave exactly the kind of hole this check exists to close.
+    probe = (
+        f"grep -m1 -E '^[[:space:]]+db:' '{app.app_dir}/{app.shipped_config}' 2>/dev/null"
+        f" || {docker} exec '{app.container}' sh -c "
+        f"\"grep -m1 -rE '^[[:space:]]+db:' /config/config.yaml /app/config.yaml 2>/dev/null\""
+    )
+    rc, out = _run(
+        ["ssh", "-p", port, "-o", "BatchMode=yes", host, probe], timeout=SSH_TIMEOUT
+    )
+    # Deliberately not gated on the exit code: grep given two candidate paths
+    # exits non-zero when one is missing, even having matched in the other. The
+    # output is the answer; the status is noise.
+    for line in out.splitlines():
+        if "db:" in line:
+            value = line.rsplit("db:", 1)[-1].strip().strip('"').strip("'")
+            if value:
+                return value
+    return None
+
+
 def repo_state(app: App) -> dict[str, Any]:
     """Branch, uncommitted files, unpushed commits, HEAD."""
     path = registry.repo_path(app)
@@ -338,6 +431,45 @@ def backups() -> dict[str, Any]:
     return out
 
 
+#: Folders where a " 2.md" suffix is produced legitimately and is not a
+#: duplicate at all — the Obsidian Web Clipper names files this way. Matches
+#: clippings-topics' janitor, which reaps everywhere except here.
+_SUFFIX_IS_NORMAL = ("10 raw/",)
+
+
+def vault_stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Live-note counts from an `_all_docs?include_docs=true` page.
+
+    **The `deleted` filter is the correctness requirement, not an optimisation.**
+    LiveSync does not tombstone a removed note: it keeps a live CouchDB document
+    and sets `deleted: true` in the *body*, so `_all_docs` lists deleted notes
+    exactly like present ones. `clippings_topics/vault.py::list_prefix` says so
+    in as many words, and this function did it wrong anyway — it reported 50
+    duplicate notes when 57 of the 58 it found were tombstones the reaper had
+    already cleaned, and inflated the document count by about a third.
+
+    Tombstones are reported separately rather than hidden: a third of this vault
+    is deleted documents, which is worth seeing once, just not as live notes.
+    """
+    live = [r for r in rows if not (r.get("doc") or {}).get("deleted")]
+    live_ids = {r.get("id", "") for r in live}
+    duplicates = [
+        i
+        for i in live_ids
+        if (m := re.match(r"^(.*) \d+\.md$", i))
+        and f"{m.group(1)}.md" in live_ids
+        and not i.startswith(_SUFFIX_IS_NORMAL)
+    ]
+    return {
+        "sampled": len(rows),
+        "live": len(live),
+        "tombstones": len(rows) - len(live),
+        "conflicts": sum(1 for r in live if (r.get("doc") or {}).get("_conflicts")),
+        "duplicate_suffixed": len(duplicates),
+        "duplicates": sorted(duplicates)[:10],
+    }
+
+
 def vault() -> dict[str, Any]:
     """Document counts and the LiveSync pain signals."""
     env = registry.read_env(Path(__file__).resolve().parent.parent / ".env")
@@ -353,9 +485,11 @@ def vault() -> dict[str, Any]:
     auth = base64.b64encode(f"{user}:{pw}".encode()).decode()
 
     def api(path: str) -> Any | None:
-        req = urllib.request.Request(url.rstrip("/") + path, headers={"Authorization": f"Basic {auth}"})
+        req = urllib.request.Request(
+            url.rstrip("/") + path, headers={"Authorization": f"Basic {auth}"}
+        )
         try:
-            with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as r:
+            with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT * 4) as r:
                 return json.loads(r.read().decode())
         except Exception:  # noqa: BLE001
             return None
@@ -366,21 +500,15 @@ def vault() -> dict[str, Any]:
         info = api(f"/{db}")
         if not info:
             continue
-        row: dict[str, Any] = {"docs": info.get("doc_count"), "deleted": info.get("doc_del_count")}
-        rows = (api(f"/{db}/_all_docs?conflicts=true&include_docs=true&limit=2000") or {}).get("rows", [])
-        row["conflicts"] = sum(1 for r in rows if (r.get("doc") or {}).get("_conflicts"))
-        # The duplicate-note race the reaper cleans up: "note 2.md" *beside* an
-        # existing "note.md". The suffix alone means nothing — `10 raw/` is full
-        # of legitimate " 1"/" 2" files straight from the Web Clipper — so only
-        # a suffixed note whose base also exists is counted.
-        ids = {r.get("id", "") for r in rows}
-        row["duplicate_suffixed"] = sum(
-            1
-            for i in ids
-            if (m := re.match(r"^(.*) \d+\.md$", i)) and f"{m.group(1)}.md" in ids
+        rows = (api(f"/{db}/_all_docs?conflicts=true&include_docs=true&limit=4000") or {}).get(
+            "rows", []
         )
-        row["sampled"] = len(rows)
-        out["databases"][db] = row
+        out["databases"][db] = {
+            # `doc_count` is CouchDB's own and counts tombstones as documents,
+            # so it is kept as `stored` and never presented as a note count.
+            "stored": info.get("doc_count"),
+            **vault_stats(rows),
+        }
     return out
 
 
@@ -440,6 +568,7 @@ def collect_fast() -> dict[str, Any]:
     boxes = containers(host, port) if host else {"error": "no ssh target configured"}
     tags = sorted({c.get("image") for c in boxes.values() if isinstance(c, dict) and c.get("image")})
     labels = image_labels(host, port, tags) if host and tags else {}
+    envs = container_envs(host, port, [a.container for a in APPS]) if host else {}
 
     def one(app: App) -> tuple[str, dict[str, Any]]:
         box = boxes.get(app.container, {}) if isinstance(boxes, dict) else {}
@@ -450,6 +579,11 @@ def collect_fast() -> dict[str, Any]:
             "revision": deployed_revision(app, box, labels),
             "repo": repo_state(app),
             "config": shipped_config_drift(app, host, port) if host else None,
+            "vault_db": vault_db_check(
+                app,
+                envs.get(app.container, []),
+                shipped_config_db(app, host, port) if host else None,
+            ),
         }
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:

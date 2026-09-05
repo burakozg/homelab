@@ -88,6 +88,11 @@ def _app_rows(fast: dict[str, Any]) -> str:
         cfg = a.get("config") or {}
         if cfg.get("state") == "drifted":
             flags.append(_chip("config edited on NAS", "bad"))
+        vdb = a.get("vault_db") or {}
+        if vdb.get("state") == "wrong":
+            flags.append(_chip("wrong vault db", "bad"))
+        elif vdb.get("state") == "unknown":
+            flags.append(_chip("vault db unconfirmed", "warn"))
 
         rows.append(
             f"""<tr>
@@ -97,6 +102,23 @@ def _app_rows(fast: dict[str, Any]) -> str:
   <td>{rchip}</td>
   <td class="flags">{' '.join(flags) or '<span class="none">—</span>'}</td>
 </tr>"""
+        )
+    return "\n".join(rows)
+
+
+def _vault_rows(fast: dict[str, Any]) -> str:
+    rows = []
+    for db, r in sorted((fast.get("vault", {}).get("databases") or {}).items()):
+        live, tombs = r.get("live"), r.get("tombstones")
+        # Live notes and tombstones in one cell, because CouchDB's own
+        # doc_count is the sum of both and reads as a note count when it is not.
+        notes = f"{live:,}" if isinstance(live, int) else "—"
+        extra = f"<small>+{tombs:,} deleted</small>" if tombs else ""
+        conf, dupes = r.get("conflicts") or 0, r.get("duplicate_suffixed") or 0
+        rows.append(
+            f'<tr><th scope="row">{e(db)}</th><td>{notes}{extra}</td>'
+            f"<td>{_chip(str(conf), 'good' if not conf else 'bad')}</td>"
+            f"<td>{_chip(str(dupes), 'good' if not dupes else 'warn')}</td></tr>"
         )
     return "\n".join(rows)
 
@@ -111,6 +133,47 @@ def _backup_rows(fast: dict[str, Any]) -> str:
             f"<td><small>{e(r['file'])}</small></td></tr>"
         )
     return "\n".join(rows)
+
+
+def _feed_alerts(extra: dict[str, Any]) -> list[tuple[str, str]]:
+    """Feeds that are actually broken, not ones that had a bad afternoon.
+
+    The last run's `feeds_failed` is a poor alert: the run that reported 8 of 23
+    took twenty minutes where a healthy one takes eighty-five seconds, and the
+    very next poll had zero failures with every feed's `consecutive_failures`
+    still at 0. That was the network, not the feeds — and a dashboard that
+    cannot tell the two apart teaches you to ignore it.
+
+    So the alert keys off the per-podcast state CouchDB actually keeps:
+    `consecutive_failures`, and `circuit_open` once the app has given up on a
+    feed. A single bad poll is reported as context, never as a problem.
+    """
+    alerts: list[tuple[str, str]] = []
+    feeds = (extra.get("status") or {}).get("feeds") or []
+    if isinstance(feeds, list):
+        broken = [f for f in feeds if f.get("circuit_open")]
+        failing = [f for f in feeds if (f.get("consecutive_failures") or 0) >= 3]
+        if broken:
+            names = ", ".join(sorted(f.get("slug", "?") for f in broken)[:4])
+            alerts.append(("bad", f"podcast-digest: {len(broken)} feed(s) given up on — {names}"))
+        for f in sorted(failing, key=lambda x: x.get("slug", ""))[:4]:
+            if f.get("circuit_open"):
+                continue
+            alerts.append(
+                ("warn", f"podcast-digest: {f.get('slug')} has failed "
+                         f"{f['consecutive_failures']} polls in a row")
+            )
+
+    ing = ((extra.get("runs") or {}).get("jobs") or {}).get("ingest", {}).get("summary", {})
+    failed, polled = ing.get("feeds_failed"), ing.get("feeds_polled")
+    if failed and not alerts:
+        # Context, not an alarm: nothing is persistently failing, so this was a
+        # single rough poll and the next one will most likely be clean.
+        alerts.append(
+            ("info", f"podcast-digest: {failed} of {polled} feeds timed out on one poll "
+                     "(no feed is persistently failing)")
+        )
+    return alerts
 
 
 def _attention(fast: dict[str, Any], slow: dict[str, Any]) -> list[tuple[str, str]]:
@@ -128,16 +191,34 @@ def _attention(fast: dict[str, Any], slow: dict[str, Any]) -> list[tuple[str, st
             out.append(("bad", f"{name} container is {box.get('state')}"))
         if (a.get("config") or {}).get("state") == "drifted":
             out.append(("bad", f"{name}: config.yaml on the NAS differs from the repo"))
+        vdb = a.get("vault_db") or {}
+        if vdb.get("state") == "wrong":
+            found = ", ".join(f"{k}={v}" for k, v in (vdb.get("found") or {}).items())
+            out.append(
+                ("bad", f"{name} is writing to the wrong vault database — "
+                        f"expected {vdb.get('expected')}, has {found}")
+            )
+        elif vdb.get("state") == "unknown":
+            out.append(("warn", f"{name}: could not confirm which vault database it writes to"))
 
-    pd = (fast.get("apps", {}).get("podcast-digest") or {}).get("extra", {})
-    ing = ((pd.get("runs") or {}).get("jobs") or {}).get("ingest", {}).get("summary", {})
-    failed, polled = ing.get("feeds_failed"), ing.get("feeds_polled")
-    if failed:
-        out.append(("warn", f"podcast-digest: {failed} of {polled} feeds failed on the last poll"))
+    out += _feed_alerts((fast.get("apps", {}).get("podcast-digest") or {}).get("extra", {}))
 
     vd = (fast.get("apps", {}).get("video-digest") or {}).get("extra", {}).get("metrics", {})
-    if (vd.get("jobs") or {}).get("failed"):
-        out.append(("warn", f"video-digest: {vd['jobs']['failed']} failed job(s)"))
+    failed_jobs = (vd.get("jobs") or {}).get("failed") or 0
+    total, written = vd.get("videos_total"), (vd.get("write_stage") or {}).get("done")
+    unwritten = (total - written) if isinstance(total, int) and isinstance(written, int) else None
+    if unwritten:
+        out.append(("bad", f"video-digest: {unwritten} video(s) never got a note"))
+    elif failed_jobs:
+        # A failed *attempt* on a video that is written is history, not a
+        # problem: the one on record is a YouTube 429 on the caption fetch,
+        # after which the retry succeeded and the note landed. Counting it as an
+        # open failure means the row never clears.
+        out.append(
+            ("info", f"video-digest: {failed_jobs} failed attempt(s), all videos written")
+        )
+    if vd.get("pending_asr"):
+        out.append(("info", f"video-digest: {vd['pending_asr']} waiting on transcription"))
 
     for db, row in (fast.get("backups", {}).get("databases") or {}).items():
         if row.get("stale"):
@@ -164,8 +245,8 @@ def _attention(fast: dict[str, Any], slow: dict[str, Any]) -> list[tuple[str, st
             )
             out.append(("bad", f"{name}: {detail}"))
 
-    order = {"bad": 0, "warn": 1}
-    return sorted(out, key=lambda x: order.get(x[0], 2))
+    order = {"bad": 0, "warn": 1, "info": 2}
+    return sorted(out, key=lambda x: order.get(x[0], 3))
 
 
 def render(snapshot: dict[str, Any]) -> str:
@@ -190,9 +271,10 @@ def render(snapshot: dict[str, Any]) -> str:
     failed = sum(t.get("failed") or 0 for t in tests.values() if t.get("ran"))
     pkgs = sum((p.get("count") or 0) for p in (slow.get("packages") or {}).values())
 
-    verdict = "bad" if any(t == "bad" for t, _ in attention) else (
-        "warn" if attention else "good"
-    )
+    # `info` lines are context, so a page carrying only those still reads as
+    # good — otherwise every transient blip permanently downgrades the verdict.
+    actionable = [t for t, _ in attention if t in ("bad", "warn")]
+    verdict = "bad" if "bad" in actionable else ("warn" if actionable else "good")
     verdict_text = {
         "good": "Everything is where it should be",
         "warn": "Running, with things worth a look",
@@ -202,15 +284,13 @@ def render(snapshot: dict[str, Any]) -> str:
     att_html = "\n".join(
         f'<li class="{t}"><span class="dot"></span>{e(m)}</li>' for t, m in attention
     ) or '<li class="good"><span class="dot"></span>Nothing outstanding.</li>'
+    if not actionable and attention:
+        att_html = ('<li class="good"><span class="dot"></span>Nothing needs action.</li>\n'
+                    + att_html)
 
     backup_rows = _backup_rows(fast) or '<tr><td colspan="4" class="none">no backups found</td></tr>'
 
-    vault_rows = "\n".join(
-        f"<tr><th scope=\"row\">{e(db)}</th><td>{r.get('docs'):,}</td>"
-        f"<td>{_chip(str(r.get('conflicts')), 'good' if not r.get('conflicts') else 'bad')}</td>"
-        f"<td>{_chip(str(r.get('duplicate_suffixed')), 'good' if not r.get('duplicate_suffixed') else 'warn')}</td></tr>"
-        for db, r in sorted((fast.get("vault", {}).get("databases") or {}).items())
-    ) or '<tr><td colspan="4" class="none">vault not reachable</td></tr>'
+    vault_rows = _vault_rows(fast) or '<tr><td colspan="4" class="none">vault not reachable</td></tr>'
 
     test_rows = []
     for name in sorted(set(tests) | set(slow.get("packages") or {})):
@@ -272,7 +352,9 @@ h2 em{{font-style:normal;text-transform:none;letter-spacing:.03em;}}
 ul.attention{{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:9px;}}
 ul.attention li{{display:flex;align-items:baseline;gap:10px;font-size:14px;color:var(--ink-2);}}
 ul.attention .dot{{width:8px;height:8px;border-radius:50%;flex:none;transform:translateY(-1px);}}
-li.bad .dot{{background:var(--bad);}} li.warn .dot{{background:var(--warn);}} li.good .dot{{background:var(--good);}}
+li.bad .dot{{background:var(--bad);}} li.warn .dot{{background:var(--warn);}}
+li.good .dot{{background:var(--good);}} li.info .dot{{background:var(--muted);}}
+li.info{{color:var(--ink-3);}}
 li.bad{{color:var(--ink);font-weight:500;}}
 .tables{{display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:20px;}}
 table{{width:100%;border-collapse:collapse;font-size:13.5px;}}
@@ -336,7 +418,7 @@ footer code{{font-family:"IBM Plex Mono",monospace;color:var(--ink-2);}}
   <section class="scroll">
     <h2>Vault <em>{e(fast_age)}</em></h2>
     <table>
-      <thead><tr><th>database</th><th>docs</th><th>conflicts</th><th>duplicates</th></tr></thead>
+      <thead><tr><th>database</th><th>live notes</th><th>conflicts</th><th>duplicates</th></tr></thead>
       <tbody>
 {vault_rows}
       </tbody>

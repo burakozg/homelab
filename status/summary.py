@@ -14,7 +14,7 @@ from render import _age, _attention
 
 BOLD, DIM, RESET = "\033[1m", "\033[2m", "\033[0m"
 RED, YELLOW, GREEN = "\033[31m", "\033[33m", "\033[32m"
-TONE = {"bad": RED, "warn": YELLOW, "good": GREEN}
+TONE = {"bad": RED, "warn": YELLOW, "good": GREEN, "info": DIM}
 
 
 def main() -> int:
@@ -28,7 +28,8 @@ def main() -> int:
     apps = fast.get("apps", {})
     attention = _attention(fast, slow)
 
-    worst = "bad" if any(t == "bad" for t, _ in attention) else ("warn" if attention else "good")
+    actionable = [t for t, _ in attention if t in ("bad", "warn")]
+    worst = "bad" if "bad" in actionable else ("warn" if actionable else "good")
     head = {"good": "all good", "warn": "worth a look", "bad": "needs attention"}[worst]
     stale = f"  {RED}(collected {fast_age} — stale){RESET}" if fast_mins > 90 else f"  {DIM}{fast_age}{RESET}"
     print(f"\n{TONE[worst]}●{RESET} {BOLD}{head}{RESET}{stale}\n")

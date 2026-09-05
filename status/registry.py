@@ -46,11 +46,15 @@ class App:
     extra: dict[str, str] = field(default_factory=dict)
     #: Local venv, for tests and outdated packages. None -> not run locally.
     venv: str | None = ".venv"
+    #: The vault database this app is supposed to write to. Checked against what
+    #: the running container actually has, because the two can silently differ.
+    expect_vault_db: str | None = None
 
 
 APPS: tuple[App, ...] = (
     App(
         name="podcast-digest",
+        expect_vault_db="the_brain",
         repo="podcast-digest",
         container="podcast-agent",
         ip_var="APP_LAN_IP",
@@ -62,6 +66,7 @@ APPS: tuple[App, ...] = (
     ),
     App(
         name="video-digest",
+        expect_vault_db="the_brain",
         repo="video-digest",
         container="video-digest",
         ip_var="APP_LAN_IP",
@@ -73,6 +78,7 @@ APPS: tuple[App, ...] = (
     ),
     App(
         name="security-digest",
+        expect_vault_db="the_brain",
         repo="security-digest",
         container="security-digest-web",
         ip_var="APP_LAN_IP_SECURITY",
@@ -85,6 +91,7 @@ APPS: tuple[App, ...] = (
     ),
     App(
         name="vault-ask",
+        expect_vault_db="the_brain",
         repo="vault-ask",
         container="vault-ask",
         ip_var="APP_LAN_IP",
@@ -94,6 +101,7 @@ APPS: tuple[App, ...] = (
     ),
     App(
         name="taster",
+        expect_vault_db="hobby",
         repo="taster",
         container="taster-worker",
         # The worker polls a cloud relay outbound and listens for nothing, so
@@ -105,6 +113,7 @@ APPS: tuple[App, ...] = (
     ),
     App(
         name="family-calendar",
+        expect_vault_db="hobby",
         repo="family_calendar",
         container="family-calendar",
         ip_var="APP_LAN_IP",
@@ -117,6 +126,7 @@ APPS: tuple[App, ...] = (
     ),
     App(
         name="clippings-topics",
+        expect_vault_db="the_brain",
         repo="clippings-topics",
         container="clippings-topics",
         # A scheduled janitor: it wakes, works, and sleeps ~8h. No server.
