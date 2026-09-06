@@ -14,7 +14,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 CANON="deploy.lib.sh"
 # Projects live as siblings of homelab/ in the same parent directory.
-PROJECTS="family_calendar podcast-digest security-digest taster clippings-topics vault-ask video-digest"
+PROJECTS="family_calendar podcast-digest security-digest taster clippings-topics vault-ask video-digest shortlist"
 
 SYNC=false
 [ "${1:-}" = "--sync" ] && SYNC=true
