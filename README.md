@@ -2,9 +2,9 @@
 
 Infrastructure notes and a map of the self-hosted services running on one
 QNAP NAS (Container Station) at home. Each service below is independently
-developed and has its own repo — this one exists because four unrelated
+developed and has its own repo — this one exists because several unrelated
 projects converged on the same handful of solutions to the same handful of
-problems, and that's worth writing down once instead of four times.
+problems, and that's worth writing down once instead of many times.
 
 Nothing here is a deploy target itself: there's no shared code, no
 docker-compose file, no CI. It's a reference doc plus a directory.
@@ -19,6 +19,8 @@ docker-compose file, no CI. It's a reference doc plus a directory.
 | **Tasting Log** | Photo/chat capture of whisky, coffee, and other tastings via Claude vision, with lookup and Obsidian sync. | [taster](https://github.com/burakozg/taster) |
 | **Clippings → Topics** | Reads saved web clippings in the Obsidian vault, works out what each is about, and links them into the shared topic pages. | [clippings-topics](https://github.com/burakozg/clippings-topics) |
 | **video-digest** | Takes a video URL, gets the best available transcript, and writes a summarised, timestamped Obsidian note. | [video-digest](https://github.com/burakozg/video-digest) |
+| **vault-ask** | Answers questions against the Obsidian vault (semantic retrieval plus the link graph), read-only — the web is only a labelled fallback. | [vault-ask](https://github.com/burakozg/vault-ask) |
+| **shortlist** | A decision workspace for buying things: one persistent research conversation per decision, alongside a living comparison document it proposes edits to. | not yet published |
 
 (Links assume each repo is published under this name — update if you named
 any of them differently.)

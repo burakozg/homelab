@@ -68,6 +68,11 @@ homelab/README.md|homelab/README.md
 clippings-topics/README.md|clippings-topics/README.md
 video-digest/README.md|video-digest/README.md
 video-digest/deploy-out/docker-compose.nas.yml|video-digest/docker-compose.yaml.md
+vault-ask/README.md|vault-ask/README.md
+vault-ask/OLLAMA-SETUP.md|vault-ask/OLLAMA-SETUP.md
+vault-ask/deploy-out/docker-compose.nas.yml|vault-ask/docker-compose.yaml.md
+shortlist/README.md|shortlist/README.md
+shortlist/deploy-out/docker-compose.nas.yml|shortlist/docker-compose.yaml.md
 "
 
 # The real addresses for a project, from its git-ignored .deploy.env.
