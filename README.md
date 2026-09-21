@@ -21,6 +21,7 @@ docker-compose file, no CI. It's a reference doc plus a directory.
 | **video-digest** | Takes a video URL, gets the best available transcript, and writes a summarised, timestamped Obsidian note. | [video-digest](https://github.com/burakozg/video-digest) |
 | **vault-ask** | Answers questions against the Obsidian vault (semantic retrieval plus the link graph), read-only — the web is only a labelled fallback. | [vault-ask](https://github.com/burakozg/vault-ask) |
 | **shortlist** | A decision workspace for buying things: one persistent research conversation per decision, alongside a living comparison document it proposes edits to. | not yet published |
+| **homelab-auth** | One login for the homelab: replaces five apps' separate admin-panel keys with a single session, checked by Traefik's `forwardAuth` in front of each. See its own README for the DNS/cookie-domain mechanics. | not yet published |
 
 (Links assume each repo is published under this name — update if you named
 any of them differently.)
@@ -82,15 +83,51 @@ enough that they cost real debugging time across more than one project:
   pair before designing around the warning; if one does fail, the fix is to
   put both containers on a shared bridge, not to give up on the integration.
 
+- **A recreate can leave a pinned-MAC container completely unreachable for a
+  while even though the MAC didn't change** — not the "Docker randomises the
+  MAC" failure mode pinning already fixes (see below), a different one:
+  `Up`/healthy, but nothing on the LAN gets so much as a TCP reset, right
+  after a fresh interface comes up. Self-heals the moment the container sends
+  any outbound packet — `docker exec <container> <anything that opens an
+  outbound connection>` forces it immediately instead of waiting it out.
+  Measured during the `homelab-auth` migration (2026-09), on both
+  `family-calendar` and its own container-to-container pair.
+
+### A second, private network for apps behind central login
+
+Several apps (`shortlist`, `podcast-digest`, `vault-ask`, `security-digest`,
+`news-digest`, `family-calendar`) have moved off individual qnet addresses
+onto `homelab-internal`, a single plain Docker bridge shared with Traefik via
+`docker network connect` — created once, not owned by any one project's
+compose file. See `homelab-auth/README.md` for why (in short: `Traefik →
+forwardAuth → the app` needed one reliable network all three could share, and
+a plain bridge has Docker's embedded DNS, which the macvlan above does not).
+Apps on this network are reached by container name, not a static IP, and are
+no longer directly reachable from the LAN at all except through Traefik —
+that's deliberate, not a regression: it's what makes the login gate in front
+of them actually mean something, rather than being one of several ways in.
+
+`family-calendar` is the one exception, and stays on **both** networks
+permanently: its physical Inky Frame e-ink display fetches by a fixed raw LAN
+IP baked into on-device firmware, with no DNS and no remote-update path, so
+that address can never go away. See that project's own docs for how its
+admin panel is still kept off the direct-IP path despite that.
+
 ## Keeping the NAS off the public internet
 
 None of these services port-forward anything. Three different patterns
 cover "reachable when I'm not home" without ever exposing the NAS directly:
 
-1. **LAN-only, admin-token gated.** No public exposure at all — the service
-   only answers on the home network, and write/admin actions require a
-   bearer token even there. Simplest option when remote access isn't a
-   requirement (Security Digest, Podcast Digest Agent).
+1. **LAN-only, login-gated.** No public exposure at all — the service only
+   answers on the home network, and admin actions require being logged in
+   even there. Simplest option when remote access isn't a requirement
+   (Security Digest, Podcast Digest Agent, shortlist, vault-ask). This used
+   to mean a bearer token per app; as of the `homelab-auth` migration
+   (2026-09) it means one shared login via Traefik's `forwardAuth` instead —
+   see that project's README for the mechanics and for which apps still keep
+   a direct per-app token (`taster`'s relay, deliberately, since its one key
+   also drives routine phone use with no admin/non-admin split to gate
+   separately).
 2. **Outbound-only via a small cloud relay.** A tiny relay service (Fly.io)
    is the only internet-facing piece; the NAS-side worker polls it
    *outbound* for jobs and posts results back the same way, so nothing ever
@@ -102,7 +139,7 @@ cover "reachable when I'm not home" without ever exposing the NAS directly:
    cloud-hosted PWA embed the home app in an iframe — browsers require
    HTTPS for that — without opening a port (Family Calendar).
 
-## Deploying: one contract, four repos
+## Deploying: one contract, every repo
 
 Every project deploys with `./deploy` at its repo root. No `deploy.sh`, nothing
 nested under `qnap/`, and — the point of the exercise — no per-repo flag to

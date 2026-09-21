@@ -73,6 +73,8 @@ vault-ask/OLLAMA-SETUP.md|vault-ask/OLLAMA-SETUP.md
 vault-ask/deploy-out/docker-compose.nas.yml|vault-ask/docker-compose.yaml.md
 shortlist/README.md|shortlist/README.md
 shortlist/deploy-out/docker-compose.nas.yml|shortlist/docker-compose.yaml.md
+homelab-auth/README.md|homelab-auth/README.md
+homelab-auth/deploy-out/docker-compose.nas.yml|homelab-auth/docker-compose.yaml.md
 "
 
 # The real addresses for a project, from its git-ignored .deploy.env.
@@ -93,7 +95,7 @@ deploy_facts() {
     case "$line" in \#*|"") continue ;; esac
     k="${line%%=*}"; v="${line#*=}"
     case "$k" in
-      NAS_SSH|NAS_SSH_PORT|NAS_APP_DIR|APP_LAN_IP*|PROXY_LAN_IP|COUCHDB_LAN_IP)
+      NAS_SSH|NAS_SSH_PORT|NAS_APP_DIR|APP_LAN_IP*|PROXY_LAN_IP|COUCHDB_LAN_IP|DNSMASQ_LAN_IP|TRAEFIK_LAN_IP|HOMELAB_DOMAIN)
         $any || { printf -- '\n> [!abstract] Deployed as\n'; any=true; }
         printf -- '> - `%s` = `%s`\n' "$k" "$v" ;;
     esac
