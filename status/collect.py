@@ -26,6 +26,7 @@ import re
 import contextlib
 import signal
 import subprocess
+import sys
 import tempfile
 import urllib.error
 import urllib.request
@@ -516,6 +517,31 @@ def vault() -> dict[str, Any]:
     return out
 
 
+def vault_health() -> dict[str, Any]:
+    """What `vault-doctor.py --check` finds right now — the damage class
+    `vault_stats` above doesn't look for: empty stub notes, duplicate
+    frontmatter keys, and topic pages that are likely the same entity split
+    across two spellings. Shelled out to rather than reimplemented, so this
+    reads the one place that logic is defined instead of a second copy of it
+    drifting from the first.
+
+    `--json` makes vault-doctor read-only regardless of flags — a dashboard
+    collector must never be the thing that mutates the vault it is reporting
+    on. Fixing anything found here is still `./vault-doctor.py`'s own job,
+    run on its own schedule.
+    """
+    script = Path(__file__).resolve().parent.parent / "vault-doctor.py"
+    if not script.is_file():
+        return {"error": "vault-doctor.py not found"}
+    rc, out = _run([sys.executable, str(script), "--json"], timeout=120)
+    if rc != 0:
+        return {"error": f"vault-doctor.py exited {rc}: {out[:200]}"}
+    try:
+        return json.loads(out)
+    except json.JSONDecodeError:
+        return {"error": f"vault-doctor.py produced invalid JSON: {out[:200]}"}
+
+
 # ── slow signals ─────────────────────────────────────────────────────────────
 
 _PYTEST = re.compile(r"(?:(\d+) failed[^\n]*?)?(\d+) passed(?:[^\n]*?(\d+) skipped)?")
@@ -654,6 +680,7 @@ def collect_fast() -> dict[str, Any]:
         "apps": apps,
         "backups": backups(),
         "vault": vault(),
+        "vault_health": vault_health(),
     }
 
 

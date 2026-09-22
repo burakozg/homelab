@@ -197,6 +197,50 @@ def _feed_alerts(extra: dict[str, Any]) -> list[tuple[str, str]]:
     return alerts
 
 
+def _vault_health_alerts(vh: dict[str, Any]) -> list[tuple[str, str]]:
+    """`vault-doctor.py`'s findings, translated into the dashboard's own tones.
+
+    Stubs and exact-duplicate frontmatter keys are self-healing — the same
+    script fixes both on its own nightly run, so seeing one here only ever
+    means "since the last run," not "stuck." Everything else it reports is
+    reported because nothing automated should guess at it (see
+    `homelab/vault-doctor.py`'s own docstring) — those stay a `warn` until a
+    person looks, however long that takes.
+    """
+    if vh.get("error"):
+        return [("warn", f"vault-doctor: {vh['error']}")]
+
+    out: list[tuple[str, str]] = []
+    if vh.get("stubs"):
+        out.append(
+            ("warn", f"vault: {len(vh['stubs'])} empty stub note(s) — "
+                     "cleared by tonight's vault-doctor run")
+        )
+    exact = [d for d in vh.get("duplicate_key_notes") or [] if d.get("type") == "exact-dup"]
+    conflict = [d for d in vh.get("duplicate_key_notes") or [] if d.get("type") == "value-conflict"]
+    if exact:
+        out.append(
+            ("warn", f"vault: {len(exact)} note(s) with a duplicate frontmatter line — "
+                     "cleared by tonight's vault-doctor run")
+        )
+    if conflict:
+        names = ", ".join(sorted(d["path"] for d in conflict)[:4])
+        out.append(("warn", f"vault: {len(conflict)} note(s) with conflicting frontmatter "
+                             f"values, needs a human — {names}"))
+    if vh.get("human_owned_stubs"):
+        out.append(
+            ("warn", f"vault: {len(vh['human_owned_stubs'])} empty note(s) in a "
+                     "human-owned folder (10 raw/), never auto-fixed")
+        )
+    if vh.get("near_duplicate_groups"):
+        groups = ", ".join("/".join(g) for g in vh["near_duplicate_groups"][:4])
+        out.append(
+            ("warn", f"vault: {len(vh['near_duplicate_groups'])} likely-duplicate topic "
+                     f"page group(s), needs a human to merge — {groups}")
+        )
+    return out
+
+
 def _attention(fast: dict[str, Any], slow: dict[str, Any]) -> list[tuple[str, str]]:
     """The things actually worth acting on, worst first.
 
@@ -257,6 +301,8 @@ def _attention(fast: dict[str, Any], slow: dict[str, Any]) -> list[tuple[str, st
             out.append(
                 ("warn", f"{db}: {row['duplicate_suffixed']} duplicate notes beside their original")
             )
+
+    out += _vault_health_alerts(fast.get("vault_health") or {})
 
     for name, t in sorted((slow.get("tests") or {}).items()):
         if t.get("ran") and not t.get("ok"):

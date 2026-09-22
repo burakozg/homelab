@@ -515,6 +515,39 @@ com.homelab.vault-backup` (or `-hobby`) to run either on demand. Only fires
 while the Mac is awake; a Mac that's reliably asleep overnight needs either a
 different schedule or `pmset` wake configuration, not covered here yet.
 
+## Vault health checks
+
+`vault-doctor.py` walks the whole vault daily (`com.homelab.vault-doctor`,
+04:00, 15 minutes after the last backup) looking for damage the four apps'
+own bugs have produced — an empty note from a click on a dead `[[wikilink]]`,
+or two frontmatter lines with the same key from LiveSync's line-level merge
+duplicating one verbatim during a concurrent write (`podcast_agent/notes.py`
+has carried defenses against the second one since before this tool existed).
+
+```sh
+./vault-doctor.py             fix what's mechanically safe, report the rest
+./vault-doctor.py --check     the same scan, no writes
+```
+
+Two things it fixes outright — a zero-byte note outside `10 raw/` (nothing
+but an app auto-creates one; `10 raw/` is the human's own Web Clipper saves,
+so an empty note there might be an intentional placeholder and is reported
+instead), and an exact duplicate frontmatter line. Everything else is
+reported, never guessed at: two lines with the same key but *different*
+values are a real disagreement between writers (see the obsidian-vault-writer
+skill, "leave both, where a human can see them"), and two topic notes whose
+basenames differ only by punctuation or case (`threat-locker.md` next to
+`threatlocker.md`) may have already accumulated genuinely different content
+under each. Logs to `~/.homelab/logs/vault-doctor.log`.
+
+`status.sh`'s fast collector also runs it (`--json`, always read-only —
+fixing is left to the scheduled job above, never to a dashboard refresh) and
+surfaces anything found in the "worth attention" list on `status.html` and
+`--print`. A stub or an exact-duplicate frontmatter key shows as a `warn`
+that says it self-heals by the next scheduled run; a value conflict or a
+near-duplicate topic pair shows as a `warn` that names the note(s) and stays
+until a person resolves it — vault-doctor never touches either.
+
 ## Is everything fine?
 
 `./status.sh` answers that in one place, from the Mac. It collects into

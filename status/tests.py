@@ -216,6 +216,39 @@ class TestATimeoutIsNotAPass(unittest.TestCase):
         self.assertEqual(found.stdout.strip(), "")
 
 
+class TestVaultHealthIsSurfacedByTone(unittest.TestCase):
+    """`vault-doctor.py`'s findings must read as self-healing or not,
+    correctly — that distinction is the whole reason a "warn" on this
+    dashboard is safe to leave overnight instead of chasing immediately."""
+
+    def test_a_clean_scan_says_nothing(self) -> None:
+        clean = {"stubs": [], "human_owned_stubs": [], "duplicate_key_notes": [], "near_duplicate_groups": []}
+        self.assertEqual(render._vault_health_alerts(clean), [])
+
+    def test_an_unreachable_doctor_is_reported_once(self) -> None:
+        alerts = render._vault_health_alerts({"error": "vault-doctor.py exited 2: ..."})
+        self.assertEqual(len(alerts), 1)
+        self.assertEqual(alerts[0][0], "warn")
+
+    def test_a_value_conflict_names_the_note(self) -> None:
+        vh = {"duplicate_key_notes": [{"path": "99 topics/anthropic.md", "type": "value-conflict", "keys": ["tags"]}]}
+        alerts = render._vault_health_alerts(vh)
+        self.assertEqual(len(alerts), 1)
+        self.assertIn("99 topics/anthropic.md", alerts[0][1])
+
+    def test_an_exact_duplicate_says_it_self_heals(self) -> None:
+        vh = {"duplicate_key_notes": [{"path": "99 topics/meta.md", "type": "exact-dup", "keys": ["tags"]}]}
+        alerts = render._vault_health_alerts(vh)
+        self.assertEqual(len(alerts), 1)
+        self.assertIn("tonight's vault-doctor run", alerts[0][1])
+
+    def test_a_near_duplicate_group_names_both_notes(self) -> None:
+        vh = {"near_duplicate_groups": [["hugging-face", "huggingface"]]}
+        alerts = render._vault_health_alerts(vh)
+        self.assertEqual(len(alerts), 1)
+        self.assertIn("hugging-face/huggingface", alerts[0][1])
+
+
 class TestNothingLeaks(unittest.TestCase):
     def test_the_registry_holds_no_real_addresses(self) -> None:
         """Real values live in each project's git-ignored .deploy.env."""
