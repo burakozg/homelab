@@ -107,12 +107,30 @@ def _run(cmd: list[str], *, cwd: Path | None = None, timeout: int = 30) -> tuple
         return 124, f"{type(exc).__name__}: {exc}"
 
 
-def _get_json(url: str, *, key: str | None = None) -> tuple[Any | None, str | None]:
-    """GET a JSON endpoint. Returns (payload, error) — exactly one is set."""
-    req = urllib.request.Request(url, headers={"X-API-Key": key} if key else {})
+def _get_json(
+    url: str, *, key: str | None = None, host_header: str | None = None
+) -> tuple[Any | None, str | None]:
+    """GET a JSON endpoint. Returns (payload, error) — exactly one is set.
+
+    `host_header` is set for apps reached only through Traefik: the URL's own
+    host is Traefik's qnet address, and the app's real hostname goes in the
+    `Host:` header instead so Traefik's Host-based routing picks the right
+    app. `urllib`/`http.client` send whatever `Host` header is explicitly
+    given rather than deriving one from the URL, so this is enough — no
+    lower-level socket work needed.
+    """
+    headers = {"X-API-Key": key} if key else {}
+    if host_header:
+        headers["Host"] = host_header
+    req = urllib.request.Request(url, headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as r:
-            return json.loads(r.read().decode()), None
+            body = r.read().decode()
+            # A 200 with an empty body is a bare liveness ping, not a parse
+            # failure — homelab-auth's /healthz is exactly this (see its
+            # README: "always 200 if the process is up", no body). Treat it
+            # as an empty-but-successful payload rather than an error.
+            return (json.loads(body) if body.strip() else {}), None
     except urllib.error.HTTPError as exc:
         return None, f"HTTP {exc.code}"
     except Exception as exc:  # noqa: BLE001 - any failure is just an unhealthy row
@@ -134,17 +152,20 @@ def probe_health(app: App) -> dict[str, Any]:
     if not url:
         return {"probed": False, "reason": "no HTTP surface — container state is the signal"}
     key = registry.app_env(app).get(app.auth_var) if app.auth_var else None
-    body, err = _get_json(url + app.health, key=key)
+    body, err = _get_json(url + app.health, key=key, host_header=app.traefik_host)
     if err:
         return {"probed": True, "ok": False, "error": err}
     body = body or {}
     status = str(body.get("status", "")).lower()
     checks = body.get("checks") or {}
     bad = [k for k, v in checks.items() if str(v).lower() not in ("ok", "true", "healthy")]
-    # Four apps, four vocabularies: "ok", "success", and family-calendar's bare
-    # {"ok": true} with no status field at all. Normalise here rather than
-    # asking six services to agree on a word.
-    healthy = status in ("ok", "healthy", "up", "success") or body.get("ok") is True
+    # Five apps, five vocabularies: "ok", "success", family-calendar's bare
+    # {"ok": true} with no status field at all, and homelab-auth's bare 200
+    # with no body at all — its whole health contract, straight from its own
+    # README ("always 200 if the process is up"). A 2xx with nothing to
+    # disagree with counts as healthy; a body that says something wrong
+    # (a status field or explicit failing check) still overrides that.
+    healthy = not body or status in ("ok", "healthy", "up", "success") or body.get("ok") is True
     return {
         "probed": True,
         "ok": healthy and not bad,
@@ -162,7 +183,7 @@ def probe_extra(app: App) -> dict[str, Any]:
     key = registry.app_env(app).get(app.auth_var) if app.auth_var else None
     out: dict[str, Any] = {}
     for label, path in app.extra.items():
-        body, err = _get_json(url + path, key=key)
+        body, err = _get_json(url + path, key=key, host_header=app.traefik_host)
         out[label] = body if err is None else {"error": err}
     return out
 
@@ -387,20 +408,32 @@ def shipped_config_drift(app: App, host: str, port: str) -> dict[str, Any] | Non
 
     Deploy ships this file, so a mismatch means someone edited it in place — a
     change that survives until the next deploy silently reverts it.
+
+    Checked at the bind-mounted host path first, falling back to the copy
+    inside the running container — vault-ask bakes config.yaml into the image
+    rather than bind-mounting it (same reason `shipped_config_db` has this
+    fallback), and skipping that case would silently stop checking the one
+    app most likely to drift unnoticed.
     """
     if not app.shipped_config or not app.app_dir:
         return None
     local = registry.repo_path(app) / app.shipped_config
     if not local.exists():
         return None
+    docker = "/share/CACHEDEV1_DATA/.qpkg/container-station/bin/docker"
+    probe = (
+        f"if [ -r '{app.app_dir}/{app.shipped_config}' ]; then "
+        f"sha256sum '{app.app_dir}/{app.shipped_config}' | cut -d' ' -f1; "
+        f"else {docker} exec '{app.container}' sh -c "
+        f"\"sha256sum /app/{app.shipped_config} 2>/dev/null | cut -d' ' -f1\"; fi"
+    )
     rc, out = _run(
-        ["ssh", "-p", port, "-o", "BatchMode=yes", host,
-         f"sha256sum '{app.app_dir}/{app.shipped_config}' 2>/dev/null | cut -d' ' -f1"],
+        ["ssh", "-p", port, "-o", "BatchMode=yes", host, probe],
         timeout=SSH_TIMEOUT,
     )
     remote = out.strip().splitlines()[0] if rc == 0 and out.strip() else None
     if not remote:
-        return {"state": "unknown", "reason": "not readable on the NAS"}
+        return {"state": "unknown", "reason": "not readable on the NAS or in the container"}
     import hashlib
 
     mine = hashlib.sha256(local.read_bytes()).hexdigest()
@@ -689,6 +722,11 @@ def collect_slow() -> dict[str, Any]:
     packages: dict[str, Any] = {}
     code: dict[str, Any] = {}
     for app in APPS:
+        # A second instance of another App's codebase (news-digest /
+        # security-digest) — skip so its repo isn't tested, checked and
+        # counted twice under two names.
+        if app.codebase_of:
+            continue
         tests[app.name] = run_tests(app)
         packages[app.name] = outdated(app)
         # Cheap (a fifth of a second a repo), but it belongs with the other

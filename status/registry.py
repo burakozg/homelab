@@ -32,7 +32,9 @@ class App:
     name: str
     repo: str
     container: str
-    #: `.deploy.env` key for the LAN address. None -> no reachable HTTP surface.
+    #: `.deploy.env` key for the LAN address. None -> no reachable HTTP surface
+    #: of its own (either a scheduled/polling worker, or reached only via
+    #: Traefik — see `traefik_host`).
     ip_var: str | None = None
     port: int = 8080
     health: str = "/healthz"
@@ -49,6 +51,22 @@ class App:
     #: The vault database this app is supposed to write to. Checked against what
     #: the running container actually has, because the two can silently differ.
     expect_vault_db: str | None = None
+    #: The `Host:` header this app answers to behind Traefik, for apps with no
+    #: `ip_var` address of their own any more (the 2026-09 central-login
+    #: migration — see homelab/README.md "A second, private network...").
+    #: `base_url` falls back to Traefik's own qnet address and the caller sends
+    #: this as the Host header, since nothing on the Mac resolves `*.servers.zou`
+    #: — that's dnsmasq's job, configured only on LAN devices. Only paths a
+    #: Traefik router explicitly leaves unauthenticated (see the NAS's
+    #: dynamic-config.yml, not tracked in any repo) are actually reachable this
+    #: way; `health` must name one of those or the probe just gets a 302.
+    traefik_host: str | None = None
+    #: Set when this app is a second running *instance* of another App's
+    #: codebase (news-digest / security-digest: one repo, two deploys). Skips
+    #: this entry in the repo-level slow checks (tests, packages, line counts)
+    #: so they aren't computed and reported twice for one codebase — container
+    #: identity, health and vault-destination checks still run independently.
+    codebase_of: str | None = None
 
 
 APPS: tuple[App, ...] = (
@@ -57,10 +75,15 @@ APPS: tuple[App, ...] = (
         expect_vault_db="the_brain",
         repo="podcast-digest",
         container="podcast-agent",
-        ip_var="APP_LAN_IP",
+        # No qnet address of its own since the 2026-09 central-login migration
+        # (its .deploy.env no longer sets APP_LAN_IP at all) — reached only
+        # through Traefik now. /healthz is the one unauthenticated exception
+        # (added 2026-09-29 specifically so this probe would work again;
+        # everything else, including /admin, stays behind the login gate).
+        ip_var=None,
+        traefik_host="podcast-digest.servers.zou",
         port=8080,
         health="/healthz",
-        auth_var="PODAGENT_ADMIN_API_KEY",
         app_dir="/share/Container/podcast-digest",
         extra={"status": "/api/v1/status", "runs": "/api/v1/runs/last"},
     ),
@@ -81,20 +104,53 @@ APPS: tuple[App, ...] = (
         expect_vault_db="the_brain",
         repo="security-digest",
         container="security-digest-web",
-        ip_var="APP_LAN_IP_SECURITY",
+        # Same migration as podcast-digest — APP_LAN_IP_SECURITY is gone from
+        # .deploy.env. /status was already carved out unauthenticated in
+        # Traefik from day one of the migration (it doubles as this app's own
+        # run report), so no further Traefik change was needed here.
+        ip_var=None,
+        traefik_host="security-digest.servers.zou",
         port=8080,
         health="/status",
         app_dir="/share/Container/security-digest",
         shipped_config=None,
-        # /status doubles as its run report: last_run, items_processed.
         extra={"run": "/status"},
+    ),
+    App(
+        name="news-digest",
+        # A second running instance of the security-digest codebase (one repo,
+        # `./deploy --instance news`) — its own container, own topics/schedule,
+        # own Traefik route. `codebase_of` skips it in the repo-level slow
+        # checks (tests/packages/line-counts) so security-digest's numbers
+        # aren't silently double-counted. Its vault destination isn't checked:
+        # unlike the security instance, nothing here confirmed what database
+        # it's supposed to write to, and a guessed expectation would be worse
+        # than no check at all.
+        codebase_of="security-digest",
+        expect_vault_db=None,
+        repo="security-digest",
+        container="news-digest-web",
+        ip_var=None,
+        traefik_host="news-digest.servers.zou",
+        port=8080,
+        health="/status",
+        app_dir="/share/Container/news-digest",
+        shipped_config=None,
+        extra={"run": "/status"},
+        venv=None,
     ),
     App(
         name="vault-ask",
         expect_vault_db="the_brain",
         repo="vault-ask",
         container="vault-ask",
-        ip_var="APP_LAN_IP",
+        # Same migration as podcast-digest/security-digest. Unlike them,
+        # /healthz here was already reachable unauthenticated — only
+        # `vaultAsk-admin` (PathPrefix /admin) carries the login-gate
+        # middleware; the catch-all `vaultAsk-web` router (everything else,
+        # including /healthz, /chat, /query) never did.
+        ip_var=None,
+        traefik_host="vault-ask.servers.zou",
         port=8080,
         health="/healthz",
         app_dir="/share/Container/vault-ask",
@@ -118,7 +174,9 @@ APPS: tuple[App, ...] = (
         container="family-calendar",
         ip_var="APP_LAN_IP",
         # 8000, not the 8080 the others use. The proxy in front of it terminates
-        # TLS on its own address; this is the app itself.
+        # TLS on its own address; this is the app itself. Deliberately kept on
+        # qnet (unlike its peers above) — see homelab/README.md's networking
+        # section for why (the Inky Frame's fixed-IP firmware).
         port=8000,
         health="/healthz",
         app_dir="/share/Container/family-calendar",
@@ -132,6 +190,40 @@ APPS: tuple[App, ...] = (
         # A scheduled janitor: it wakes, works, and sleeps ~8h. No server.
         ip_var=None,
         app_dir="/share/Container/clippings-topics",
+        shipped_config=None,
+    ),
+    App(
+        name="shortlist",
+        # No vault integration — it's a standalone decision workspace, not
+        # part of the Obsidian-vault fleet.
+        expect_vault_db=None,
+        repo="shortlist",
+        container="shortlist",
+        # Never had a qnet address — it joined homelab-internal from its first
+        # deploy (see homelab/README.md). /healthz carved out unauthenticated
+        # in Traefik on 2026-09-29, same reasoning as podcast-digest's.
+        ip_var=None,
+        traefik_host="shortlist.servers.zou",
+        port=8080,
+        health="/healthz",
+        app_dir="/share/Container/shortlist",
+    ),
+    App(
+        name="homelab-auth",
+        # The login service itself — nothing to check against the vault, and
+        # no LLM model to report.
+        expect_vault_db=None,
+        repo="homelab-auth",
+        container="homelab-auth",
+        # Kept on qnet deliberately: Traefik's forwardAuth calls it by this
+        # address, and dnsmasq needs a stable target of its own to route
+        # `auth.servers.zou` at. Its own /verify and /login are deliberately
+        # NOT behind its own gate — see the NAS's dynamic-config.yml.
+        ip_var="APP_LAN_IP",
+        port=8098,
+        health="/healthz",
+        app_dir="/share/Container/homelab-auth",
+        # No config.yaml — all configuration is environment variables.
         shipped_config=None,
     ),
 )
@@ -165,12 +257,37 @@ def app_env(app: App) -> dict[str, str]:
     return read_env(repo_path(app) / ".env")
 
 
+def traefik_lan_ip() -> str | None:
+    """Traefik's own qnet address, read from homelab-auth's `.deploy.env` —
+    the only project that both needs and declares it (its forwardAuth
+    middleware calls back into homelab-auth by this address' peer).
+
+    Apps with no LAN address of their own any more (`traefik_host` set, no
+    `ip_var`) are reached through Traefik instead — the caller must then send
+    the app's own Host header itself, since nothing on the Mac resolves
+    `*.servers.zou`; that's dnsmasq's job, and it's only configured on LAN
+    devices, not this collector's host.
+    """
+    env = read_env(PROJECTS / "homelab-auth" / ".deploy.env")
+    return env.get("TRAEFIK_LAN_IP")
+
+
 def base_url(app: App) -> str | None:
-    """`http://host:port`, or None when the app exposes nothing to probe."""
-    if not app.ip_var:
-        return None
-    ip = deploy_env(app).get(app.ip_var)
-    return f"http://{ip}:{app.port}" if ip else None
+    """`http://host:port`, or None when the app exposes nothing to probe.
+
+    Prefers the app's own qnet address when it has one; falls back to
+    Traefik's address for apps reached only that way (see `traefik_host` on
+    `App`). Traefik listens on :80 for the `web` entrypoint regardless of any
+    individual app's own port.
+    """
+    if app.ip_var:
+        ip = deploy_env(app).get(app.ip_var)
+        if ip:
+            return f"http://{ip}:{app.port}"
+    if app.traefik_host:
+        ip = traefik_lan_ip()
+        return f"http://{ip}:80" if ip else None
+    return None
 
 
 def ssh_target(app: App) -> tuple[str, str] | None:
