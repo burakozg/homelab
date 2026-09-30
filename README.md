@@ -15,13 +15,13 @@ docker-compose file, no CI. It's a reference doc plus a directory.
 |---|---|---|
 | **Family Calendar** | Self-hosted family calendar synced to a Pimoroni Inky Frame e-ink display, with AI-assisted weekly meal planning. | [family_calendar](https://github.com/burakozg/family_calendar) |
 | **Podcast Digest Agent** | Monitors podcasts, decides which episodes matter, transcribes and summarises them into a weekly Markdown digest synced to Obsidian. | [podcast-digest](https://github.com/burakozg/podcast-digest) |
-| **Security Digest** | Fetches security news, summarises and categorises it with an LLM, and delivers curated digests by email on a schedule. | [security-digest](https://github.com/burakozg/security-digest) |
+| **Security Digest** | Fetches security news, summarises and categorises it with an LLM, and delivers curated digests by email on a schedule. Runs as two independent instances from this one codebase — `security-digest` and `news-digest` — each with its own topics, schedule and Traefik route. | [security-digest](https://github.com/burakozg/security-digest) |
 | **Tasting Log** | Photo/chat capture of whisky, coffee, and other tastings via Claude vision, with lookup and Obsidian sync. | [taster](https://github.com/burakozg/taster) |
 | **Clippings → Topics** | Reads saved web clippings in the Obsidian vault, works out what each is about, and links them into the shared topic pages. | [clippings-topics](https://github.com/burakozg/clippings-topics) |
 | **video-digest** | Takes a video URL, gets the best available transcript, and writes a summarised, timestamped Obsidian note. | [video-digest](https://github.com/burakozg/video-digest) |
 | **vault-ask** | Answers questions against the Obsidian vault (semantic retrieval plus the link graph), read-only — the web is only a labelled fallback. | [vault-ask](https://github.com/burakozg/vault-ask) |
 | **shortlist** | A decision workspace for buying things: one persistent research conversation per decision, alongside a living comparison document it proposes edits to. | not yet published |
-| **homelab-auth** | One login for the homelab: replaces five apps' separate admin-panel keys with a single session, checked by Traefik's `forwardAuth` in front of each. See its own README for the DNS/cookie-domain mechanics. | not yet published |
+| **homelab-auth** | One login for the homelab: replaces five apps' separate admin-panel keys with a single session, checked by Traefik's `forwardAuth` in front of each. See its own README for the DNS/cookie-domain mechanics. | [homelab-auth](https://github.com/burakozg/homelab-auth) |
 
 (Links assume each repo is published under this name — update if you named
 any of them differently.)
@@ -579,6 +579,27 @@ kind of tool goes wrong:
 - **One unreachable app degrades its own row and the run still exits 0.** A
   collector that aborts on the first problem is useless on the day it is needed.
 
+### Reaching apps behind Traefik
+
+Apps on `homelab-internal` (see "A second, private network..." above) have no
+LAN address for the collector to curl directly any more. `registry.py`'s
+`App.traefik_host` names the `Host:` header for these — the request still goes
+to Traefik's own qnet address, with the app's real hostname sent as the header
+so Traefik's Host-based routing picks the right service. This only reaches
+paths a Traefik router explicitly leaves unauthenticated (security-digest's and
+news-digest's `/status`, vault-ask's non-admin routes, and — added 2026-09-29
+specifically so this probe would keep working — podcast-digest's and
+shortlist's `/healthz`); anything else just gets `forwardAuth`'s 302, which
+reads as an error rather than a health result. That carve-out lives in the
+NAS's own `dynamic-config.yml`, not in any repo — see "Keeping the NAS off the
+public internet" above.
+
+`App.codebase_of` marks a second running instance of another App's codebase
+(`news-digest` → `security-digest`): the collector still checks its container,
+health and vault destination independently, but skips it in the repo-level slow
+checks (tests, packages, line counts) so one codebase isn't tested and counted
+twice under two names.
+
 ### Knowing what is actually deployed
 
 The image tags here are static (`podcast-agent:1.0.0`), so a tag says which
@@ -593,6 +614,15 @@ actual lie.
 
 An app that has not been deployed since this landed reports `unknown — redeploy
 to enable`, which is the honest answer and not a failure.
+
+Config drift (`App.shipped_config`) is checked the same bind-mount-first way:
+hash the file at `app_dir` on the NAS host and compare it to the repo's copy.
+`vault-ask` bakes `config.yaml` into its image instead of bind-mounting it, so
+that path never existed on the host and the check falls back to hashing the
+copy inside the running container — the same fallback `App.expect_vault_db`'s
+check already needed for the same app and the same reason. Skipping that
+fallback reads as "not readable on the NAS," which looks like a NAS problem and
+isn't one.
 
 ### What it cannot do
 
