@@ -65,6 +65,8 @@ podcast-digest/architecture.md|podcast-digest/architecture.md
 podcast-digest/DEPLOY-NAS.md|podcast-digest/DEPLOY-NAS.md
 podcast-digest/deploy-out/docker-compose.nas.yml|podcast-digest/docker-compose.yaml.md
 homelab/README.md|homelab/README.md
+homelab/nas-jobs/README.md|homelab/nas-jobs.md
+homelab/governance/README.md|homelab/governance.md
 clippings-topics/README.md|clippings-topics/README.md
 video-digest/README.md|video-digest/README.md
 video-digest/deploy-out/docker-compose.nas.yml|video-digest/docker-compose.yaml.md

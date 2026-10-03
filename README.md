@@ -30,9 +30,11 @@ any of them differently.)
 
 ## The platform
 
-All four run on a QNAP NAS via **Container Station**, either as plain
-`docker compose` stacks (SSH-deployed) or as Container Station "Application"
-definitions (YAML pasted into the UI). A few things about this specific NAS
+Everything runs on a QNAP NAS via **Container Station**, as plain
+`docker compose` projects deployed over ssh. None are Container Station
+"Application" definitions any more: they show up there as *discovered* entries
+offering only Start/Restart/Stop, and Container Station keeps only the daemon and
+the macvlan network. A few things about this specific NAS
 turned out to matter enough that every project's deploy tooling ended up
 working around them the same way:
 
@@ -48,7 +50,7 @@ working around them the same way:
   full path (`/share/CACHEDEV1_DATA/.qpkg/container-station/bin/docker`)
   rather than relying on resolution.
 - **Container Station's stored Application YAML is a separate copy from the
-  file in your repo.** "Recreate" re-reads what's stored in Container
+  file in your repo** (the reason none of these are Applications now). "Recreate" re-reads what's stored in Container
   Station, not your file — a mount added or changed in the repo has zero
   effect until you re-paste the YAML.
 - Docker silently creates a **directory** at any bind-mount host path that
@@ -98,7 +100,8 @@ enough that they cost real debugging time across more than one project:
 ### A second, private network for apps behind central login
 
 Several apps (`shortlist`, `podcast-digest`, `vault-ask`, `security-digest`,
-`news-digest`, `family-calendar`) have moved off individual qnet addresses
+`news-digest`, `taster-admin`, `family-calendar`, plus the `governance` site and
+the `homelab-jobs` container) have moved off individual qnet addresses
 onto `homelab-internal`, a single plain Docker bridge shared with Traefik via
 `docker network connect` — created once, not owned by any one project's
 compose file. See `homelab-auth/README.md` for why (in short: `Traefik →
@@ -162,7 +165,7 @@ Projects keep extra verbs of their own where they earn one (`mac`, `data-pull`,
 
 ### `LIFECYCLE`, declared per project
 
-All four are now **`LIFECYCLE=compose`**: `apply` ships the compose file and runs
+Every project is now **`LIFECYCLE=compose`**: `apply` ships the compose file and runs
 `docker compose up -d` over ssh. Every deploy is one command, on every project.
 
 The setting remains because it earned its keep during the migration. Two of the
@@ -202,7 +205,7 @@ into held nothing but zeros for the digests, while Podcast Digest caps itself at
 So Container Station is kept for what only it can do — it owns the
 `qnet-static-eth1-dc7e3a` macvlan every project joins as `external: true`, runs
 the docker daemon, and lists every container under **Containers** for logs and
-start/stop. The Application wrapper is gone from all four.
+start/stop. The Application wrapper is gone everywhere.
 
 A project that compose takes over gets demoted in the Applications list to a
 *discovered* entry (marked with an ⓘ), offering only Start/Restart/Stop/Inspect —
