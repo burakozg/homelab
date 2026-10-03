@@ -6,6 +6,7 @@
 #   ./status.sh --slow     test suites and outdated packages (minutes)
 #   ./status.sh --print    print the last snapshot without collecting
 #   ./status.sh --html     re-render status.html from the last snapshot
+#   ./status.sh --publish  push the governance site from the last snapshot
 #
 # Runs on the Mac, and has to: the source-side signals (tests, unpushed work,
 # outdated packages, the commit a running image was built from) exist nowhere
@@ -48,12 +49,31 @@ if [ -f "$LOG" ] && [ "$(wc -c < "$LOG")" -gt 262144 ]; then
   tail -n 400 "$LOG" > "${LOG}.tmp" && mv "${LOG}.tmp" "$LOG"
 fi
 
+# Push the governance pages (governance/) to the NAS. A failure here must not
+# fail the collection — but it must not be silent either: the site's own
+# staleness banner is the backstop, this line is the early warning.
+publish_governance() {
+  [ -f governance/.deploy.env ] || return 0
+  local out
+  # PYTHON: launchd's PATH resolves python3 to Xcode's 3.9, see pick_python.
+  if out="$(PYTHON="$PY" governance/deploy publish 2>&1)"; then
+    echo "  published: governance site"
+  else
+    echo "  ✗ governance publish failed — the site will go stale:"
+    printf '%s\n' "$out" | tail -n 3 | sed 's/^/    /'
+  fi
+}
+
 case "${1:-}" in
-  --slow)  exec "$PY" status/collect.py --slow ;;
+  --slow)
+    "$PY" status/collect.py --slow
+    publish_governance
+    exit 0 ;;
   --print) exec "$PY" status/summary.py ;;
   --html)  exec "$PY" status/render.py ;;
+  --publish) "$PY" status/render.py >/dev/null; publish_governance; exit 0 ;;
   --fast|"") ;;
-  *) echo "usage: $0 [--fast|--slow|--print|--html]" >&2; exit 2 ;;
+  *) echo "usage: $0 [--fast|--slow|--print|--html|--publish]" >&2; exit 2 ;;
 esac
 
 "$PY" status/collect.py --fast >/dev/null
@@ -61,4 +81,4 @@ esac
 "$PY" status/summary.py
 echo
 echo "  page: ${DIR}/status.html"
-echo "  publish: ask Claude to refresh the status page (a LaunchAgent cannot)"
+publish_governance

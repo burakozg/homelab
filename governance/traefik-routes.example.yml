@@ -1,0 +1,22 @@
+# Add to Traefik's dynamic-config.yml on the NAS (untracked, shared by every
+# app — back it up first, as the existing .bak-<timestamp> files show). The
+# whole host sits behind the login gate: there is no /healthz carve-out because
+# the status collector does not probe this site (it is not a registry App).
+#
+#   ./deploy traefik     prints this with GOVERNANCE_HOST filled in
+http:
+  routers:
+    governance-web:
+      rule: "Host(`GOVERNANCE_HOST_PLACEHOLDER`)"
+      service: "governance"
+      middlewares:
+        - homelabAuth-forward
+      priority: 1
+      entryPoints:
+        - web
+
+  services:
+    governance:
+      loadBalancer:
+        servers:
+          - url: "http://governance:8080"

@@ -1,0 +1,147 @@
+#!/usr/bin/env bash
+# Deploy the governance site (status / architecture / models) to the NAS.
+# Run it on the Mac.
+#
+#   ./deploy            build the image, ship it and the pages, bring it up
+#   ./deploy ship       build and ship only — nothing restarted
+#   ./deploy apply      bring it up from what is already on the NAS
+#   ./deploy publish    rebuild the pages and push them — no restart, seconds
+#   ./deploy render     write deploy-out/docker-compose.nas.yml and stop
+#   ./deploy check      is it running, and is the login gate in front of it
+#   ./deploy logs       follow the container's log
+#   ./deploy traefik    print the routes to add to Traefik's dynamic-config.yml
+#
+# `publish` is what ../status.sh runs after every collector pass. The other
+# verbs follow the contract in ../README.md.
+set -euo pipefail
+
+cd "$(dirname "$0")"
+. ../deploy.lib.sh
+nas_load_env "$PWD" "/share/Container/governance"
+
+LIFECYCLE=compose
+TAG="governance:1"
+NAS_COMPOSE="docker-compose.nas.yml"
+RENDERED="deploy-out/docker-compose.nas.yml"
+PORT=8080
+GOVERNANCE_HOST="${GOVERNANCE_HOST:-governance.example.lan}"
+
+do_render() {
+  nas_render "$NAS_COMPOSE" "$RENDERED" "s#NAS_APP_DIR_PLACEHOLDER#${NAS_APP_DIR}#g"
+}
+
+do_publish() {
+  nas_require_reachable
+  "${PYTHON:-python3}" ./build.py >/dev/null || die "build.py failed — nothing published."
+  (cd deploy-out/site && nas_mirror_tree "${NAS_APP_DIR}/site" html,txt .) >/dev/null
+  # Verify the page that matters actually landed with content — a transfer that
+  # silently produced nothing must not read as "published".
+  local want got
+  want="$(wc -c < deploy-out/site/index.html | tr -d '[:space:]')"
+  got="$(nas_ssh "wc -c < '${NAS_APP_DIR}/site/index.html'" | tr -d '[:space:]')"
+  [ "$want" = "$got" ] || die "index.html didn't publish cleanly (${want} bytes here, ${got:-none} there)."
+  echo "✓ governance pages published"
+}
+
+do_probe_via_traefik() {
+  if nas_ssh "'${NAS_DOCKER_BIN}' exec traefik-1 wget -q -O /dev/null --timeout=5 http://governance:${PORT}/healthz" 2>/dev/null; then
+    echo "✓ governance: up → http://governance:${PORT} (via Traefik's internal network)"
+  else
+    echo "✗ governance: no answer at http://governance:${PORT}/healthz (via Traefik's internal network)"
+    return 1
+  fi
+}
+
+do_wait_reachable_via_traefik() {
+  local tries=24 i=1
+  while [ "$i" -le "$tries" ]; do
+    do_probe_via_traefik >/dev/null 2>&1 && { do_probe_via_traefik; return 0; }
+    [ "$i" = 1 ] && echo "  … governance not up yet; waiting"
+    sleep 5
+    i=$((i + 1))
+  done
+  do_probe_via_traefik || { echo "    Still unreachable after $((tries * 5))s."; return 1; }
+}
+
+# The container answering internally says nothing about the front door. This
+# asks Traefik, from this Mac, the way a browser would arrive: it must bounce an
+# unauthenticated request to the login, and must never serve the page itself.
+do_gate_check() {
+  local ip="${TRAEFIK_LAN_IP:-}" code
+  if [ -z "$ip" ] || [ "$ip" = "10.0.0.2" ]; then
+    echo "– gate: TRAEFIK_LAN_IP not set in .deploy.env; skipped"
+    return 0
+  fi
+  code="$(curl -s -o /dev/null -m 10 -w '%{http_code}' -H "Host: ${GOVERNANCE_HOST}" "http://${ip}/" || true)"
+  case "$code" in
+    301|302|303|307|401|403) echo "✓ gate: unauthenticated request → ${code} (login required)" ;;
+    200) echo "✗ gate: unauthenticated request got the page (200) — forwardAuth is NOT in front of it"; return 1 ;;
+    404) echo "✗ gate: Traefik answers 404 for ${GOVERNANCE_HOST} — the route is not added (./deploy traefik)"; return 1 ;;
+    *)   echo "✗ gate: unexpected answer '${code}' from Traefik for ${GOVERNANCE_HOST}"; return 1 ;;
+  esac
+}
+
+do_ship() {
+  nas_require_reachable
+  nas_ship_image "$TAG" "$PWD"
+  do_render
+  nas_put "$RENDERED" "${NAS_APP_DIR}/docker-compose.nas.yml"
+  nas_ssh "mkdir -p '${NAS_APP_DIR}/site'"
+  do_publish
+}
+
+do_apply() {
+  nas_require_reachable
+  nas_ssh "cd '${NAS_APP_DIR}' && mkdir -p ${NAS_DOCKER_CONFIG} && ${NAS_DOCKER_ENV} '${NAS_DOCKER_BIN}' compose -f docker-compose.nas.yml up -d" \
+    || die "compose up failed on the NAS."
+  nas_ssh "cd '${NAS_APP_DIR}' && ${NAS_DOCKER_ENV} '${NAS_DOCKER_BIN}' compose -f docker-compose.nas.yml ps --format 'table {{.Name}}\t{{.Status}}'"
+  do_wait_reachable_via_traefik
+}
+
+do_check() {
+  nas_require_reachable
+  nas_ssh "'${NAS_DOCKER_BIN}' ps --filter name=governance --format 'table {{.Names}}\t{{.Status}}'"
+  do_probe_via_traefik
+  do_gate_check
+}
+
+do_logs() {
+  nas_ssh -t "'${NAS_DOCKER_BIN}' logs -f --tail 200 governance"
+}
+
+do_traefik() {
+  sed "s#GOVERNANCE_HOST_PLACEHOLDER#${GOVERNANCE_HOST}#g" traefik-routes.example.yml
+}
+
+usage() {
+  sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'
+}
+
+NO_APPLY=false
+VERB=""
+for arg in "$@"; do
+  nas_global_flag "$arg" && continue
+  case "$arg" in
+    ship|apply|check|render|logs|up|publish|traefik|help) VERB="$arg" ;;
+    *) die "unknown argument: ${arg}. Try ./deploy help" ;;
+  esac
+done
+
+case "${VERB:-up}" in
+  help)    usage ;;
+  render)  do_render ;;
+  ship)    do_ship ;;
+  apply)   do_apply ;;
+  publish) do_publish ;;
+  check)   do_check ;;
+  logs)    do_logs ;;
+  traefik) do_traefik ;;
+  up)
+    do_ship
+    if [ "$NO_APPLY" = true ]; then
+      echo "== shipped; not applying (--no-apply) =="
+    else
+      do_apply
+    fi
+    ;;
+esac

@@ -1,0 +1,38 @@
+# The governance site's web server on the NAS. Shipped by ./deploy and brought
+# up with `docker compose up -d` over ssh — see ../README.md for why none of
+# these projects are Container Station "Applications".
+#
+# On homelab-internal only, like every app behind the central login: no
+# published port and no LAN address, so Traefik (and its forwardAuth gate) is
+# the only way in. By container name via Docker's embedded DNS.
+
+name: governance
+
+services:
+  governance:
+    image: governance:1
+    container_name: governance
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "3"
+
+    # Nothing is written outside /tmp; read_only makes that provable.
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 64m
+
+    volumes:
+      - NAS_APP_DIR_PLACEHOLDER/site:/usr/share/nginx/html:ro
+
+    networks:
+      - homelab-internal
+
+networks:
+  homelab-internal:
+    external: true

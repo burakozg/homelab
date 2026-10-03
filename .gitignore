@@ -8,3 +8,7 @@
 # work forever and make `git status` useless as a signal.
 __pycache__/
 *.py[cod]
+
+# governance site: real deploy values and the built pages
+governance/.deploy.env
+governance/deploy-out/

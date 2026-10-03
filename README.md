@@ -6,8 +6,10 @@ developed and has its own repo — this one exists because several unrelated
 projects converged on the same handful of solutions to the same handful of
 problems, and that's worth writing down once instead of many times.
 
-Nothing here is a deploy target itself: there's no shared code, no
-docker-compose file, no CI. It's a reference doc plus a directory.
+Almost nothing here is a deploy target: there's no shared code and no CI. It's
+a reference doc plus a directory — with one exception, [`governance/`](governance/),
+a small static site (status, architecture, models) served from the NAS behind the
+central login. It is the one thing here with a compose file of its own.
 
 ## Projects
 
@@ -557,6 +559,7 @@ until a person resolves it — vault-doctor never touches either.
 ./status.sh            # collect the fast signals, render, print the summary
 ./status.sh --slow     # test suites and outdated packages (minutes)
 ./status.sh --print    # the last snapshot, instantly, with no network
+./status.sh --publish  # push the governance site from the last snapshot
 ```
 
 Two tiers, because they cost different amounts. **Fast** (~10 s, every 30 min
@@ -624,13 +627,25 @@ check already needed for the same app and the same reason. Skipping that
 fallback reads as "not readable on the NAS," which looks like a NAS problem and
 isn't one.
 
+### Where the page lives: `governance/`
+
+Every collector run ends by publishing the pages to the NAS (`status.sh`'s
+`publish_governance`), where a read-only nginx container serves them behind
+Traefik's `homelabAuth-forward` — the same single login as the apps. The site
+has three pages: **Status** (this collector's snapshot), **Architecture**
+(hand-maintained board, `governance/content/`) and **Models** (the model ids
+read from each repo's `config.yaml`, checked against a hardware table, so a
+newly configured model that nobody assessed shows up as "not in table"). See
+[`governance/README.md`](governance/README.md).
+
 ### What it cannot do
 
-**The page cannot refresh itself.** It is published as an Artifact, and that
-needs a session — a LaunchAgent cannot do it, and the artifact sandbox blocks
-the page from fetching the NAS directly. So the snapshot is always current and
-the *page* is current as of its last publish, which it states plainly at the
-top. `./status.sh --print` is the always-fresh view.
+**The page is only as fresh as the last collector run, and says so.** The Mac
+collector is the sole source, so if the Mac is asleep or the publish fails the
+site keeps serving the last pages. Every age on them is recomputed in the
+browser against the viewer's clock, and a red banner appears when the snapshot
+is older than its stale threshold — so "the collector stopped" reads as stopped,
+not as healthy. `./status.sh --print` is the always-fresh view.
 
 
 ## The Obsidian vault

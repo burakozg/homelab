@@ -1,0 +1,47 @@
+<section class="scroll">
+  <h2>Model hardware requirements <em>mapped to Mac Studio (M5, 2026)</em></h2>
+  <table>
+    <thead><tr><th>model</th><th>params</th><th>unified memory (int4)</th><th>fits on</th><th>bandwidth per call</th><th>runs today on</th></tr></thead>
+    <tbody>
+<tr><th scope="row">google/gemini-2.5-flash<small>google/gemini-2.5-flash-lite (vault-ask rerank)</small></th><td class="mono">undisclosed</td><td class="mono">—</td><td><span class="chip bad">not possible</span><small>closed weights — no self-host option at any spec</small></td><td class="mono">~1–5 KB text</td><td>OpenRouter → Google</td></tr>
+<tr><th scope="row">qwen/qwen3-vl-235b-a22b-instruct</th><td class="mono">235B total / 22B active (MoE)</td><td class="mono">~130 GB+<small>235B × 0.5 B/param (int4) ≈ 117.5 GB weights, all experts resident + ~10–15 GB for KV cache/vision encoder/overhead — the 22B active path only shrinks compute per token, not the memory footprint, since routing is dynamic and any expert may fire</small></td><td><span class="chip good">M5 Ultra only</span><small>256 GB tier today, 512 GB from late Oct — M5 Max's 128 GB ceiling can't hold it</small></td><td class="mono">0.1–2 MB/image + text</td><td>OpenRouter</td></tr>
+<tr><th scope="row">qwen/qwen3.8-27b</th><td class="mono">27B dense</td><td class="mono">~16–18 GB<small>~54 GB at fp16 — needs the Ultra for full precision</small></td><td><span class="chip good">any Mac Studio</span><small>fits the base M5 Max (36 GB) at int4</small></td><td class="mono">~1–5 KB text</td><td>OpenRouter</td></tr>
+<tr><th scope="row">meta-llama/llama-3.1-8b-instruct</th><td class="mono">8B dense</td><td class="mono">~5–6 GB<small>~16 GB at fp16</small></td><td><span class="chip good">any Mac Studio</span><small>trivial even on base M5 Max — also fits your existing Mac, not the NAS</small></td><td class="mono">~1–5 KB text</td><td>OpenRouter</td></tr>
+<tr><th scope="row">deepseek/deepseek-v4-flash<sup class="fn">†</sup></th><td class="mono">unconfirmed</td><td class="mono">unconfirmed</td><td><span class="chip muted">unconfirmed</span><small>"flash" tier — likely M5 Max-class</small></td><td class="mono">~1–5 KB text</td><td>OpenRouter</td></tr>
+<tr><th scope="row">deepseek/deepseek-v4-pro<sup class="fn">†</sup></th><td class="mono">unconfirmed</td><td class="mono">unconfirmed</td><td><span class="chip muted">unconfirmed</span><small>"pro" tier — likely needs M5 Ultra</small></td><td class="mono">~1–5 KB text</td><td>OpenRouter</td></tr>
+<tr><th scope="row">qwen/qwen3.7-flash<sup class="fn">†</sup></th><td class="mono">unconfirmed</td><td class="mono">unconfirmed</td><td><span class="chip muted">unconfirmed</span><small>"flash" tier — likely M5 Max-class</small></td><td class="mono">~1–5 KB text</td><td>OpenRouter</td></tr>
+<tr><th scope="row">moonshotai/kimi-k2.5<sup class="fn">†</sup><small>shortlist</small></th><td class="mono">unconfirmed</td><td class="mono">unconfirmed</td><td><span class="chip muted">unconfirmed</span></td><td class="mono">~1–5 KB text</td><td>OpenRouter</td></tr>
+<tr><th scope="row">qwen/qwen3.7-plus<sup class="fn">†</sup><small>shortlist tier</small></th><td class="mono">unconfirmed</td><td class="mono">unconfirmed</td><td><span class="chip muted">unconfirmed</span></td><td class="mono">~1–5 KB text</td><td>OpenRouter</td></tr>
+<tr><th scope="row">qwen/qwen3.5-flash-02-23<sup class="fn">†</sup><small>shortlist tier</small></th><td class="mono">unconfirmed</td><td class="mono">unconfirmed</td><td><span class="chip muted">unconfirmed</span></td><td class="mono">~1–5 KB text</td><td>OpenRouter</td></tr>
+<tr><th scope="row">mistralai/mistral-small-3.2-24b-instruct<small>shortlist, cheap tier</small></th><td class="mono">24B dense</td><td class="mono">~14 GB<small>~48 GB at fp16</small></td><td><span class="chip good">any Mac Studio</span><small>fits the base M5 Max (36 GB) at int4</small></td><td class="mono">~1–5 KB text</td><td>OpenRouter</td></tr>
+<tr><th scope="row">large-v3<small>ASR, video-digest accuracy tier</small></th><td class="mono">~1.55B</td><td class="mono">~3–6 GB</td><td><span class="chip good">any Mac Studio</span><small>trivial, runs on CPU or GPU</small></td><td class="mono">audio stream, ∝ length</td><td><span class="chip good">self-hosted today</span></td></tr>
+<tr><th scope="row">distil-large-v3<small>ASR, video-digest config default</small></th><td class="mono">~756M</td><td class="mono">~2–3 GB</td><td><span class="chip good">any Mac Studio</span><small>trivial</small></td><td class="mono">audio stream, ∝ length</td><td><span class="chip good">self-hosted today</span></td></tr>
+<tr><th scope="row">Systran/faster-whisper-small.en<small>ASR, video-digest as deployed (ASR_MODEL)</small></th><td class="mono">~244M</td><td class="mono">~1 GB</td><td><span class="chip good">any Mac Studio</span><small>trivial</small></td><td class="mono">audio stream, ∝ length</td><td><span class="chip good">self-hosted today</span></td></tr>
+<tr><th scope="row">large-v3-turbo<small>ASR, podcast-digest</small></th><td class="mono">~809M</td><td class="mono">~2–4 GB</td><td><span class="chip good">any Mac Studio</span><small>trivial, runs on CPU alone</small></td><td class="mono">audio stream, ∝ length</td><td><span class="chip good">self-hosted today</span></td></tr>
+<tr><th scope="row">ollama/bge-m3<small>embeddings, vault-ask</small></th><td class="mono">~568M</td><td class="mono">~1–2 GB</td><td><span class="chip good">any Mac Studio</span><small>trivial, runs on CPU alone</small></td><td class="mono">~1–5 KB text in, vector out</td><td><span class="chip good">self-hosted today</span><small>Ollama on a LAN machine, not the NAS</small></td></tr>
+<tr><th scope="row">kokoro<small>TTS, podcast-digest</small></th><td class="mono">~82M</td><td class="mono">&lt;1 GB</td><td><span class="chip good">any Mac Studio</span><small>trivial, runs on CPU alone</small></td><td class="mono">audio stream out</td><td><span class="chip good">self-hosted today</span></td></tr>
+    </tbody>
+  </table>
+  <p style="margin:12px 0 0;font-size:12px;color:var(--ink-3);line-height:1.6;">
+    Mapped against the 2026 Mac Studio lineup: <strong>M5 Max</strong> — 18-core CPU, up to
+    40-core GPU, up to 128&nbsp;GB unified memory, ~614&nbsp;GB/s bandwidth, from $2,499 (36 GB
+    base) — and <strong>M5 Ultra</strong> — up to 36-core CPU, up to 80-core GPU, up to
+    512&nbsp;GB unified memory, 1.2&nbsp;TB/s bandwidth, from $5,499 (96 GB base; 256 GB
+    available now, 512 GB ships late October 2026). Apple Silicon shares one unified memory
+    pool across CPU/GPU/Neural Engine, so unlike a discrete GPU there's no separate VRAM
+    ceiling below the machine's total RAM — that's specifically why the 235B-parameter Qwen3-VL
+    model only becomes self-hostable at all on the Ultra tier, not because of raw compute.
+    <strong>Fitting in memory is not the same as fitting in time</strong>, though: an M5 Ultra's
+    1.2&nbsp;TB/s is well short of a datacenter GPU's several TB/s, so a model that loads fine
+    on a Mac Studio will still generate noticeably slower than the same model on the multi-GPU
+    hardware OpenRouter actually runs it on.
+    <br><br>
+    <sup class="fn">†</sup> these model ids reference releases after my Jan 2026 knowledge cutoff —
+    sizes are unconfirmed rather than guessed; check OpenRouter's model page before relying on them.
+    Every LLM/vision row above currently runs as an API call, not on your hardware — actual local
+    footprint today is ~zero compute and the "bandwidth per call" column. The NAS itself remains
+    out of the question regardless of any of this: it has roughly 1&nbsp;GB of free RAM and no GPU.
+  </p>
+</section>
+
+<div class="tables">

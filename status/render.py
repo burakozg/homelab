@@ -317,7 +317,22 @@ def _attention(fast: dict[str, Any], slow: dict[str, Any]) -> list[tuple[str, st
     return sorted(out, key=lambda x: order.get(x[0], 3))
 
 
-def render(snapshot: dict[str, Any]) -> str:
+def _ts(section: dict[str, Any], kind: str) -> str:
+    """Attributes that let AGE_JS recompute an age in the browser.
+
+    The ages in this page are computed when it is rendered. Served as a static
+    file that is the moment of the last collector run, so without this a page
+    opened tomorrow would still say "12 min ago" — a stale page that looks fresh,
+    which is the one failure this dashboard exists to prevent.
+    """
+    iso = section.get("collected_at")
+    if not iso:
+        return ""
+    return f' data-ts="{e(iso)}" data-stale-min="{STALE_MINUTES[kind]}"'
+
+
+def render_body(snapshot: dict[str, Any]) -> tuple[str, str]:
+    """(verdict, body html) — the part a hosting page wraps in its own chrome."""
     fast = snapshot.get("fast") or {}
     slow = snapshot.get("slow") or {}
     fast_mins, fast_age = _age(fast.get("collected_at"))
@@ -393,75 +408,15 @@ def render(snapshot: dict[str, Any]) -> str:
             f"<td>{cell}{dur}</td><td>{pkg}</td></tr>"
         )
 
-    return f"""<title>Homelab Status</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
-<style>
-:root{{
-  --paper:#f5f7f8;--panel:#fff;--panel-2:#eef3f5;--ink:#14202a;--ink-2:#4a5c6a;--ink-3:#7b8d99;
-  --line:#d3dde3;--accent:#1f7a6d;
-  --good:#1f7a4d;--good-bg:#e6f4ec;--warn:#a2701a;--warn-bg:#fbf1dd;--bad:#b23a2f;--bad-bg:#fbeae8;
-  --muted:#6b7d89;--muted-bg:#edf1f3;
-}}
-@media (prefers-color-scheme:dark){{:root:not([data-theme="light"]){{
-  --paper:#0d1519;--panel:#131f26;--panel-2:#182731;--ink:#e6eef2;--ink-2:#93a7b3;--ink-3:#6d8290;
-  --line:#24343d;--accent:#4fc0ae;
-  --good:#5cc98d;--good-bg:#12291d;--warn:#e0b055;--warn-bg:#2b2412;--bad:#f08a7d;--bad-bg:#2e1a18;
-  --muted:#8ea2ae;--muted-bg:#1b2831;
-}}}}
-:root[data-theme="dark"]{{
-  --paper:#0d1519;--panel:#131f26;--panel-2:#182731;--ink:#e6eef2;--ink-2:#93a7b3;--ink-3:#6d8290;
-  --line:#24343d;--accent:#4fc0ae;
-  --good:#5cc98d;--good-bg:#12291d;--warn:#e0b055;--warn-bg:#2b2412;--bad:#f08a7d;--bad-bg:#2e1a18;
-  --muted:#8ea2ae;--muted-bg:#1b2831;
-}}
-body{{background:var(--paper);color:var(--ink);font-family:"IBM Plex Sans",system-ui,sans-serif;-webkit-font-smoothing:antialiased;}}
-.wrap{{max-width:1180px;margin:0 auto;padding:26px 26px 40px;display:flex;flex-direction:column;gap:20px;}}
-header{{display:flex;justify-content:space-between;align-items:flex-end;gap:20px;flex-wrap:wrap;}}
-.eyebrow{{font-family:"IBM Plex Mono",monospace;font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-3);margin:0 0 6px;}}
-h1{{margin:0;font-size:27px;font-weight:600;letter-spacing:-.015em;text-wrap:balance;}}
-h1 .mark{{color:var(--{verdict});}}
-.freshness{{display:flex;gap:18px;font-family:"IBM Plex Mono",monospace;font-size:11px;color:var(--ink-3);}}
-.freshness b{{display:block;font-size:15px;font-family:"IBM Plex Sans";font-weight:600;color:var(--ink);margin-top:3px;}}
-.freshness .stale b{{color:var(--bad);}}
-section{{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px 18px;}}
-h2{{margin:0 0 12px;font-family:"IBM Plex Mono",monospace;font-size:10.5px;font-weight:600;letter-spacing:.16em;text-transform:uppercase;color:var(--ink-3);display:flex;justify-content:space-between;}}
-h2 em{{font-style:normal;text-transform:none;letter-spacing:.03em;}}
-ul.attention{{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:9px;}}
-ul.attention li{{display:flex;align-items:baseline;gap:10px;font-size:14px;color:var(--ink-2);}}
-ul.attention .dot{{width:8px;height:8px;border-radius:50%;flex:none;transform:translateY(-1px);}}
-li.bad .dot{{background:var(--bad);}} li.warn .dot{{background:var(--warn);}}
-li.good .dot{{background:var(--good);}} li.info .dot{{background:var(--muted);}}
-li.info{{color:var(--ink-3);}}
-li.bad{{color:var(--ink);font-weight:500;}}
-.tables{{display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:20px;}}
-table{{width:100%;border-collapse:collapse;font-size:13.5px;}}
-th,td{{text-align:left;padding:8px 10px 8px 0;border-bottom:1px solid var(--line);vertical-align:top;}}
-tr:last-child th,tr:last-child td{{border-bottom:none;}}
-thead th{{font-family:"IBM Plex Mono",monospace;font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-3);font-weight:600;}}
-tbody th{{font-weight:600;font-family:"IBM Plex Mono",monospace;font-size:12.5px;white-space:nowrap;}}
-small{{display:block;color:var(--ink-3);font-size:11px;margin-top:3px;font-family:"IBM Plex Mono",monospace;}}
-td{{font-variant-numeric:tabular-nums;}}
-.chip{{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11.5px;font-weight:500;white-space:nowrap;}}
-.chip.good{{background:var(--good-bg);color:var(--good);}}
-.chip.warn{{background:var(--warn-bg);color:var(--warn);}}
-.chip.bad{{background:var(--bad-bg);color:var(--bad);}}
-.chip.muted{{background:var(--muted-bg);color:var(--muted);}}
-.flags{{line-height:2;}} .none{{color:var(--ink-3);}}
-.scroll{{overflow-x:auto;}}
-footer{{color:var(--ink-3);font-size:12px;line-height:1.6;}}
-footer code{{font-family:"IBM Plex Mono",monospace;color:var(--ink-2);}}
-</style>
-<div class="wrap">
+    return verdict, f"""<div class="wrap">
 <header>
   <div>
     <p class="eyebrow">Homelab · {len(apps)} applications</p>
-    <h1><span class="mark">●</span> {e(verdict_text)}</h1>
+    <h1><span class="mark {verdict}">●</span> {e(verdict_text)}</h1>
   </div>
   <div class="freshness">
-    <div class="{'stale' if fast_stale else ''}"><span>live signals</span><b>{e(fast_age)}</b></div>
-    <div class="{'stale' if slow_stale else ''}"><span>source scan</span><b>{e(slow_age)}</b></div>
+    <div class="{'stale' if fast_stale else ''}"><span>live signals</span><b{_ts(fast, 'fast')}>{e(fast_age)}</b></div>
+    <div class="{'stale' if slow_stale else ''}"><span>source scan</span><b{_ts(slow, 'slow')}>{e(slow_age)}</b></div>
     <div><span>healthy / running</span><b>{healthy}/{len(apps)} · {running}/{len(apps)}</b></div>
     <div><span>tests</span><b>{passed:,} pass{f' · {failed} fail' if failed else ''}</b></div>
     <div><span>lines of code</span><b>{total_code:,}</b></div>
@@ -476,7 +431,7 @@ footer code{{font-family:"IBM Plex Mono",monospace;color:var(--ink-2);}}
 </section>
 
 <section class="scroll">
-  <h2>Applications <em>{e(fast_age)}</em></h2>
+  <h2>Applications <em{_ts(fast, 'fast')}>{e(fast_age)}</em></h2>
   <table>
     <thead><tr><th>app</th><th>health</th><th>container</th><th>deployed code</th><th>repo</th></tr></thead>
     <tbody>
@@ -487,7 +442,7 @@ footer code{{font-family:"IBM Plex Mono",monospace;color:var(--ink-2);}}
 
 <div class="tables">
   <section class="scroll">
-    <h2>Backups <em>{e(fast_age)}</em></h2>
+    <h2>Backups <em{_ts(fast, 'fast')}>{e(fast_age)}</em></h2>
     <table>
       <thead><tr><th>database</th><th>age</th><th>size</th><th>file</th></tr></thead>
       <tbody>
@@ -496,7 +451,7 @@ footer code{{font-family:"IBM Plex Mono",monospace;color:var(--ink-2);}}
     </table>
   </section>
   <section class="scroll">
-    <h2>Vault <em>{e(fast_age)}</em></h2>
+    <h2>Vault <em{_ts(fast, 'fast')}>{e(fast_age)}</em></h2>
     <table>
       <thead><tr><th>database</th><th>live notes</th><th>conflicts</th><th>duplicates</th></tr></thead>
       <tbody>
@@ -529,6 +484,100 @@ footer code{{font-family:"IBM Plex Mono",monospace;color:var(--ink-2);}}
 </footer>
 </div>
 """
+
+
+STYLE = """:root{
+  --paper:#f5f7f8;--panel:#fff;--panel-2:#eef3f5;--ink:#14202a;--ink-2:#4a5c6a;--ink-3:#7b8d99;
+  --line:#d3dde3;--accent:#1f7a6d;
+  --good:#1f7a4d;--good-bg:#e6f4ec;--warn:#a2701a;--warn-bg:#fbf1dd;--bad:#b23a2f;--bad-bg:#fbeae8;
+  --muted:#6b7d89;--muted-bg:#edf1f3;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --paper:#0d1519;--panel:#131f26;--panel-2:#182731;--ink:#e6eef2;--ink-2:#93a7b3;--ink-3:#6d8290;
+  --line:#24343d;--accent:#4fc0ae;
+  --good:#5cc98d;--good-bg:#12291d;--warn:#e0b055;--warn-bg:#2b2412;--bad:#f08a7d;--bad-bg:#2e1a18;
+  --muted:#8ea2ae;--muted-bg:#1b2831;
+}}
+:root[data-theme="dark"]{
+  --paper:#0d1519;--panel:#131f26;--panel-2:#182731;--ink:#e6eef2;--ink-2:#93a7b3;--ink-3:#6d8290;
+  --line:#24343d;--accent:#4fc0ae;
+  --good:#5cc98d;--good-bg:#12291d;--warn:#e0b055;--warn-bg:#2b2412;--bad:#f08a7d;--bad-bg:#2e1a18;
+  --muted:#8ea2ae;--muted-bg:#1b2831;
+}
+body{background:var(--paper);color:var(--ink);font-family:"IBM Plex Sans",system-ui,sans-serif;-webkit-font-smoothing:antialiased;}
+.wrap{max-width:1180px;margin:0 auto;padding:26px 26px 40px;display:flex;flex-direction:column;gap:20px;}
+header{display:flex;justify-content:space-between;align-items:flex-end;gap:20px;flex-wrap:wrap;}
+.eyebrow{font-family:"IBM Plex Mono",monospace;font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-3);margin:0 0 6px;}
+h1{margin:0;font-size:27px;font-weight:600;letter-spacing:-.015em;text-wrap:balance;}
+h1 .mark.good{color:var(--good);} h1 .mark.warn{color:var(--warn);} h1 .mark.bad{color:var(--bad);}
+.freshness{display:flex;gap:18px;font-family:"IBM Plex Mono",monospace;font-size:11px;color:var(--ink-3);}
+.freshness b{display:block;font-size:15px;font-family:"IBM Plex Sans";font-weight:600;color:var(--ink);margin-top:3px;}
+.freshness .stale b{color:var(--bad);}
+section{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px 18px;}
+h2{margin:0 0 12px;font-family:"IBM Plex Mono",monospace;font-size:10.5px;font-weight:600;letter-spacing:.16em;text-transform:uppercase;color:var(--ink-3);display:flex;justify-content:space-between;}
+h2 em{font-style:normal;text-transform:none;letter-spacing:.03em;}
+ul.attention{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:9px;}
+ul.attention li{display:flex;align-items:baseline;gap:10px;font-size:14px;color:var(--ink-2);}
+ul.attention .dot{width:8px;height:8px;border-radius:50%;flex:none;transform:translateY(-1px);}
+li.bad .dot{background:var(--bad);} li.warn .dot{background:var(--warn);}
+li.good .dot{background:var(--good);} li.info .dot{background:var(--muted);}
+li.info{color:var(--ink-3);}
+li.bad{color:var(--ink);font-weight:500;}
+.tables{display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:20px;}
+table{width:100%;border-collapse:collapse;font-size:13.5px;}
+th,td{text-align:left;padding:8px 10px 8px 0;border-bottom:1px solid var(--line);vertical-align:top;}
+tr:last-child th,tr:last-child td{border-bottom:none;}
+thead th{font-family:"IBM Plex Mono",monospace;font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-3);font-weight:600;}
+tbody th{font-weight:600;font-family:"IBM Plex Mono",monospace;font-size:12.5px;white-space:nowrap;}
+small{display:block;color:var(--ink-3);font-size:11px;margin-top:3px;font-family:"IBM Plex Mono",monospace;}
+td{font-variant-numeric:tabular-nums;}
+.chip{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11.5px;font-weight:500;white-space:nowrap;}
+.chip.good{background:var(--good-bg);color:var(--good);}
+.chip.warn{background:var(--warn-bg);color:var(--warn);}
+.chip.bad{background:var(--bad-bg);color:var(--bad);}
+.chip.muted{background:var(--muted-bg);color:var(--muted);}
+.flags{line-height:2;} .none{color:var(--ink-3);}
+.scroll{overflow-x:auto;}
+footer{color:var(--ink-3);font-size:12px;line-height:1.6;}
+footer code{font-family:"IBM Plex Mono",monospace;color:var(--ink-2);}
+"""
+
+#: Re-ages every [data-ts] element against the viewer's clock.
+AGE_JS = """
+(function(){
+  function human(m){
+    if(m<1)return"just now"; if(m<90)return Math.floor(m)+" min ago";
+    if(m<60*36)return Math.floor(m/60)+" h ago"; return Math.floor(m/1440)+" d ago";
+  }
+  function tick(){
+    var now=Date.now();
+    document.querySelectorAll("[data-ts]").forEach(function(el){
+      var t=Date.parse(el.getAttribute("data-ts")); if(isNaN(t))return;
+      var m=(now-t)/60000, stale=m>+el.getAttribute("data-stale-min");
+      el.textContent=human(m);
+      if(el.tagName==="B")el.parentNode.classList.toggle("stale",stale);
+    });
+  }
+  tick(); setInterval(tick,60000);
+})();
+"""
+
+FONTS = (
+    '<link rel="preconnect" href="https://fonts.googleapis.com">\n'
+    '<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>\n'
+    '<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600'
+    '&family=IBM+Plex+Sans:wght@400;500;600&display=swap">'
+)
+
+
+def render(snapshot: dict[str, Any]) -> str:
+    _, body = render_body(snapshot)
+    return (
+        f"<title>Homelab Status</title>\n{FONTS}\n<style>\n{STYLE}</style>\n"
+        f"{body}\n<script>{AGE_JS}</script>\n"
+    )
+
+
 
 
 def main() -> int:
