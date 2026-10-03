@@ -11,8 +11,9 @@
 #   ./deploy logs       follow the container's log
 #   ./deploy traefik    print the routes to add to Traefik's dynamic-config.yml
 #
-# `publish` is what ../status.sh runs after every collector pass. The other
-# verbs follow the contract in ../README.md.
+# `publish` pushes the two pages built from the repos (architecture, models);
+# ../status.sh runs it after the daily source scan. The status page itself is
+# built on the NAS by ../nas-jobs/. The other verbs follow ../README.md.
 set -euo pipefail
 
 cd "$(dirname "$0")"
@@ -25,21 +26,27 @@ NAS_COMPOSE="docker-compose.nas.yml"
 RENDERED="deploy-out/docker-compose.nas.yml"
 PORT=8080
 GOVERNANCE_HOST="${GOVERNANCE_HOST:-governance.example.lan}"
+# Where the homelab-jobs container writes the status page (see ../nas-jobs/).
+NAS_JOBS_DIR="${NAS_JOBS_DIR:-/share/Container/homelab-jobs}"
 
 do_render() {
-  nas_render "$NAS_COMPOSE" "$RENDERED" "s#NAS_APP_DIR_PLACEHOLDER#${NAS_APP_DIR}#g"
+  nas_render "$NAS_COMPOSE" "$RENDERED" \
+    "s#NAS_APP_DIR_PLACEHOLDER#${NAS_APP_DIR}#g; s#NAS_JOBS_DIR_PLACEHOLDER#${NAS_JOBS_DIR}#g"
 }
 
 do_publish() {
   nas_require_reachable
+  # Fresh each time, so the mirror below also removes a page that is no longer
+  # built here (index.html used to be, and is now the NAS's to write).
+  rm -rf deploy-out/site
   "${PYTHON:-python3}" ./build.py >/dev/null || die "build.py failed — nothing published."
   (cd deploy-out/site && nas_mirror_tree "${NAS_APP_DIR}/site" html,txt .) >/dev/null
   # Verify the page that matters actually landed with content — a transfer that
   # silently produced nothing must not read as "published".
   local want got
-  want="$(wc -c < deploy-out/site/index.html | tr -d '[:space:]')"
-  got="$(nas_ssh "wc -c < '${NAS_APP_DIR}/site/index.html'" | tr -d '[:space:]')"
-  [ "$want" = "$got" ] || die "index.html didn't publish cleanly (${want} bytes here, ${got:-none} there)."
+  want="$(wc -c < deploy-out/site/architecture.html | tr -d '[:space:]')"
+  got="$(nas_ssh "wc -c < '${NAS_APP_DIR}/site/architecture.html'" | tr -d '[:space:]')"
+  [ "$want" = "$got" ] || die "architecture.html didn't publish cleanly (${want} bytes here, ${got:-none} there)."
   echo "✓ governance pages published"
 }
 

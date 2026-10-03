@@ -5,22 +5,22 @@ the central login.
 
 | page | source | refreshed |
 |---|---|---|
-| **Status** `/` | the collector's snapshot (`../status`) | every collector run (30 min fast, daily slow) |
+| **Status** `/` | the NAS's `live.json` + the Mac's snapshots, rendered on the NAS (`../nas-jobs`) | every 30 min, by `homelab-jobs` |
 | **Architecture** `/architecture` | `content/architecture.{html,css}`, by hand | when you edit it and `./deploy publish` |
-| **Models** `/models` | each repo's `config.yaml` + `content/models-hardware.html` | every collector run |
+| **Models** `/models` | each repo's `config.yaml` + `content/models-hardware.html` | daily, by the Mac's slow run |
 
 ## How it fits together
 
 ```
-Mac: status.sh ──collect──▶ ~/.homelab/status/*.json
-        └─▶ governance/deploy publish ──build.py──▶ deploy-out/site/*.html
-                                          └─ssh tar─▶ NAS: $NAS_APP_DIR/site/
+NAS: homelab-jobs ──live.json + Mac snapshots──▶ build.py --status-only ──▶ NAS: $NAS_JOBS_DIR/site/index.html
+Mac: status.sh ──fast/slow.json──▶ nas-jobs/deploy push ─ssh─▶ NAS: homelab-jobs data/
+Mac: governance/deploy publish ──build.py──▶ architecture.html, models.html ─ssh tar─▶ NAS: $NAS_APP_DIR/site/
 Browser ─▶ Traefik ─forwardAuth─▶ homelab-auth ─▶ `governance` (nginx, :8080)
-                                                    mounts site/ read-only
+                                                    / from the jobs site/, the rest from site/ (read-only)
 ```
 
 - **No restart on refresh.** nginx serves a bind-mounted directory; `publish`
-  replaces the files in place.
+  replaces the files in place, and `homelab-jobs` rewrites `index.html` itself.
 - **Gated as a whole host.** Router `governance-web` carries
   `homelabAuth-forward`; there is no `/healthz` carve-out, because the status
   collector does not probe this site. The container has no published port and sits

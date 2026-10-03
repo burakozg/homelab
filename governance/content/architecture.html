@@ -3,7 +3,7 @@
     <div>
       <p class="eyebrow">Homelab architecture</p>
       <h1>Nothing listens inbound — now behind one login</h1>
-      <p class="sub">Nine codebases, ten running instances, two Obsidian vaults, and still not a single open port at home. Since September, most of the fleet moved off direct LAN addresses onto a private bridge that only Traefik can reach, gated by a new single-login service — a stricter version of the same rule, not a different one.</p>
+      <p class="sub">Nine codebases, ten running instances, a governance site and a jobs container beside them, two Obsidian vaults, and still not a single open port at home. Since September, most of the fleet moved off direct LAN addresses onto a private bridge that only Traefik can reach, gated by a new single-login service — a stricter version of the same rule, not a different one.</p>
     </div>
     <div class="stats">
       <div class="stat"><b>@@CODEBASES@@</b><span>codebases</span></div>
@@ -14,31 +14,32 @@
   </header>
 
   <div class="callout">
-    <b>Since 2026-09-29, the shape is unchanged:</b> same nine codebases, ten instances, no open
-    ports. What moved is inside <code>taster</code> — its worker now makes a second, focused
-    "enrichment" model call when the first pass drops tasting notes or pairings, every model call
-    is capped at 150&nbsp;s so one stalled upstream can't block the job queue, and the Fly.io relay's
-    PWA keeps your input when a capture fails. <code>family-calendar</code>'s wall-tablet view is
-    live, and <code>shortlist</code> / <code>vault-ask</code> were redeployed to head. Still true:
-    only the Fly relay is reachable from the internet, and the NAS reaches out to it.
+    <b>Since 2026-09-29:</b> two containers joined <code>homelab-internal</code>. <code>governance</code>
+    serves these pages behind the login, and <code>homelab-jobs</code> took over the work that used to
+    run on the Mac only while it was awake: the nightly vault backups (onto a different NAS volume),
+    the vault doctor, and the 30-minute health probes that render the Status page. The Mac keeps what
+    only it can see — tests, git state, outdated packages, container state — and pushes it over.
+    <code>taster</code> also moved: its admin UI is now behind Traefik's login, its worker has no LAN
+    presence, and its CouchDB is the vault CouchDB itself, not a separate one.
+    Still true: only the Fly relay is reachable from the internet, and the NAS reaches out to it.
   </div>
 
   <div class="callout">
-    <b>What changed between 2026-09-04 and 2026-09-29:</b> <code>shortlist</code>
+    <b>Between 2026-09-04 and 2026-09-29:</b> <code>shortlist</code>
     and <code>homelab-auth</code> shipped as new apps; <code>security-digest</code> split into two
     running instances (<code>security-digest</code> + <code>news-digest</code>) from one codebase;
     and five apps — <code>shortlist</code>, <code>podcast-digest</code>, <code>vault-ask</code>,
-    <code>security-digest</code>, <code>news-digest</code>, plus <code>family-calendar</code>'s
-    proxy — gave up their own LAN address and now sit on a private Docker bridge reached only
-    through Traefik's login gate. <code>clippings-topics</code>, <code>video-digest</code> and
-    <code>taster</code> stay exactly as before: no browser admin surface worth gating, so no reason
-    to move them.
+    <code>security-digest</code>, <code>news-digest</code> — gave up their own LAN address and now sit
+    on a private Docker bridge reached only
+    through Traefik's login gate. <code>clippings-topics</code> and <code>video-digest</code> stay
+    on their LAN addresses: no browser admin surface worth gating, so no reason to move them.
+    <code>family-calendar</code> joined the bridge but keeps its qnet address, for its fixed-IP e-ink display.
   </div>
 
   <div class="board">
-    <svg viewBox="0 0 1780 850" role="img" aria-labelledby="d-t d-d">
+    <svg viewBox="0 0 1780 990" role="img" aria-labelledby="d-t d-d">
       <title id="d-t">Homelab architecture diagram</title>
-      <desc id="d-d">External services above a dashed home perimeter containing a login gate, the QNAP NAS split into a macvlan zone and a private-bridge zone behind Traefik, the Mac, and the LiveSync client devices.</desc>
+      <desc id="d-d">External services above a dashed home perimeter containing a login gate, the QNAP NAS split into a macvlan zone and a private-bridge zone behind Traefik, the vault CouchDB, the Mac, and the LiveSync client devices.</desc>
       <defs>
         <marker id="a-cloud" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
           <path d="M0,1 L9,5 L0,9 z" fill="var(--cloud)"/></marker>
@@ -87,14 +88,14 @@
       </g>
 
       <!-- ─── home perimeter ────────────────────────────────── -->
-      <rect x="60" y="156" width="1660" height="652" rx="12" class="zone-edge" stroke-dasharray="7 6" stroke-width="1.4"/>
+      <rect x="60" y="156" width="1660" height="792" rx="12" class="zone-edge" stroke-dasharray="7 6" stroke-width="1.4"/>
       <text class="t-zone" x="80" y="182">HOME LAN — NOTHING LISTENS FOR INBOUND CONNECTIONS</text>
 
       <path class="flow flow-cloud" d="M900,202 V122" marker-end="url(#a-cloud)"/>
       <text class="t-edge" x="914" y="168" fill="var(--cloud)">outbound only</text>
 
       <!-- ─── NAS ───────────────────────────────────────────── -->
-      <rect x="88" y="202" width="1180" height="586" rx="9" class="zone-fill" stroke="var(--nas)" stroke-opacity=".3"/>
+      <rect x="88" y="202" width="1180" height="708" rx="9" class="zone-fill" stroke="var(--nas)" stroke-opacity=".3"/>
       <text class="t-panel" x="112" y="232">QNAP NAS · Container Station</text>
       <text class="t-meta" x="112" y="251">login gate: dnsmasq → Traefik → homelab-auth, then Host-based routing to each app</text>
 
@@ -125,9 +126,9 @@
       <path class="flow flow-auth" d="M451,336 V354" marker-end="url(#a-auth)"/>
 
       <!-- two sub-zones -->
-      <rect x="112" y="356" width="440" height="260" rx="8" class="zone-a" stroke="var(--line-2)"/>
+      <rect x="112" y="356" width="440" height="376" rx="8" class="zone-a" stroke="var(--line-2)"/>
       <text class="t-zone" x="128" y="373">QNET — MACVLAN, STATIC LAN IP EACH</text>
-      <rect x="576" y="356" width="668" height="260" rx="8" class="zone-b" stroke="var(--line-2)"/>
+      <rect x="576" y="356" width="668" height="376" rx="8" class="zone-b" stroke="var(--line-2)"/>
       <text class="t-zone" x="592" y="373">HOMELAB-INTERNAL — PRIVATE BRIDGE, TRAEFIK-ONLY</text>
 
       <!-- qnet cards -->
@@ -148,20 +149,23 @@
       </g>
       <g>
         <rect x="124" y="496" width="200" height="100" rx="7" class="card"/>
-        <text class="t-name" x="136" y="517">taster</text>
-        <text class="t-role" x="136" y="535">Photo/chat capture of</text>
-        <text class="t-note" x="136" y="550">tastings. Worker polls the</text>
-        <text class="t-note" x="136" y="565">Fly.io relay outbound only.</text>
-        <text class="t-note" x="136" y="583">Own pipeline CouchDB too.</text>
+        <text class="t-name" x="136" y="517">family-cal proxy</text>
+        <text class="t-role" x="136" y="535">Caddy. Real HTTPS via</text>
+        <text class="t-note" x="136" y="551">DNS-01, for the cloud PWA's</text>
+        <text class="t-note" x="136" y="566">iframe. Reaches the backend</text>
+        <text class="t-note" x="136" y="581">by container name, not IP.</text>
       </g>
       <g>
         <rect x="340" y="496" width="200" height="100" rx="7" class="card"/>
-        <text class="t-name" x="352" y="517">family-calendar</text>
-        <text class="t-role" x="352" y="535">backend — Inky Frame, meal</text>
-        <text class="t-note" x="352" y="550">planning. Kept on qnet: the</text>
-        <text class="t-note" x="352" y="565">physical display has a fixed</text>
-        <text class="t-note" x="352" y="580">IP baked in, no DNS possible.</text>
+        <text class="t-name" x="352" y="517">vault-ask-nextchat</text>
+        <text class="t-role" x="352" y="535">The chat UI sidecar for</text>
+        <text class="t-note" x="352" y="551">vault-ask. Browser-facing</text>
+        <text class="t-note" x="352" y="566">only here, on the LAN; it</text>
+        <text class="t-note" x="352" y="581">calls vault-ask over a bridge.</text>
       </g>
+      <text class="t-note" x="128" y="634">Also on qnet, drawn below: the vault CouchDB</text>
+      <text class="t-note" x="128" y="649">(container taster-couchdb) — LiveSync clients</text>
+      <text class="t-note" x="128" y="664">sync against its LAN address.</text>
 
       <!-- homelab-internal cards -->
       <g>
@@ -206,52 +210,73 @@
       </g>
       <g>
         <rect x="1028" y="496" width="204" height="100" rx="7" class="card"/>
-        <text class="t-name" x="1040" y="517">family-cal proxy</text>
-        <text class="t-role" x="1040" y="535">Caddy. Real HTTPS via</text>
-        <text class="t-note" x="1040" y="550">DNS-01, for the cloud PWA's</text>
-        <text class="t-note" x="1040" y="565">iframe. Reaches the backend</text>
-        <text class="t-note" x="1040" y="580">by container name, not IP.</text>
+        <text class="t-name" x="1040" y="517">family-calendar</text>
+        <text class="t-role" x="1040" y="535">backend — Inky Frame, meal</text>
+        <text class="t-note" x="1040" y="551">planning. On both networks:</text>
+        <text class="t-note" x="1040" y="566">the display has a fixed IP</text>
+        <text class="t-note" x="1040" y="581">baked in, no DNS possible.</text>
+      </g>
+      <g>
+        <rect x="588" y="612" width="204" height="100" rx="7" class="card"/>
+        <text class="t-name" x="600" y="633">taster</text>
+        <text class="t-role" x="600" y="651">Photo/chat tasting capture.</text>
+        <text class="t-note" x="600" y="667">Admin UI behind the login;</text>
+        <text class="t-note" x="600" y="682">worker on a private bridge,</text>
+        <text class="t-note" x="600" y="697">polls the Fly relay outbound.</text>
+      </g>
+      <g>
+        <rect x="808" y="612" width="204" height="100" rx="7" class="card"/>
+        <text class="t-name" x="820" y="633">governance</text>
+        <text class="t-role" x="820" y="651">These pages, served by nginx.</text>
+        <text class="t-note" x="820" y="667">Status comes from homelab-</text>
+        <text class="t-note" x="820" y="682">jobs; Architecture and Models</text>
+        <text class="t-note" x="820" y="697">are pushed from the Mac.</text>
+      </g>
+      <g>
+        <rect x="1028" y="612" width="204" height="100" rx="7" class="card"/>
+        <text class="t-name" x="1040" y="633">homelab-jobs</text>
+        <text class="t-role" x="1040" y="651">Nightly vault backups and</text>
+        <text class="t-note" x="1040" y="667">doctor, plus 30-min health</text>
+        <text class="t-note" x="1040" y="682">probes. Writes the Status</text>
+        <text class="t-note" x="1040" y="697">page; no docker.sock.</text>
       </g>
 
       <!-- the one app-to-app link, now crossing the two sub-zones -->
       <path class="flow flow-link" d="M540,430 V488 H910 V478" marker-end="url(#a-link)"/>
       <text class="t-edge" x="725" y="502" text-anchor="middle" fill="var(--link)">hourly import, by video-digest's qnet IP — the host routes it there</text>
 
+      <!-- the Mac pushes its source-side checks to homelab-jobs -->
+      <path class="flow flow-mac" d="M1312,501 H1278 V662 H1234" marker-end="url(#a-mac)"/>
+      <text class="t-edge" x="1272" y="580" text-anchor="end" fill="var(--mac)">checks</text>
+
       <!-- vault write flow -->
-      <path class="flow flow-vault" d="M900,616 V636" marker-end="url(#a-vault)"/>
-      <text class="t-edge" x="912" y="630" fill="var(--vault)">vault writes — most apps above</text>
+      <path class="flow flow-vault" d="M900,732 V764" marker-end="url(#a-vault)"/>
+      <text class="t-edge" x="912" y="752" fill="var(--vault)">vault writes — most apps above</text>
 
       <!-- data row -->
       <g>
-        <rect x="124" y="656" width="270" height="112" rx="7" class="card"/>
-        <text class="t-name" x="140" y="682">couchdb-podcast</text>
-        <text class="t-role" x="140" y="700">Pipeline state for podcast-digest.</text>
-        <text class="t-note" x="140" y="718">Loopback only — not on any LAN</text>
-        <text class="t-note" x="140" y="732">network, never replicated.</text>
-        <text class="t-meta" x="140" y="754">private</text>
+        <rect x="124" y="772" width="270" height="112" rx="7" class="card"/>
+        <text class="t-name" x="140" y="798">couchdb-podcast</text>
+        <text class="t-role" x="140" y="816">Pipeline state for podcast-digest.</text>
+        <text class="t-note" x="140" y="834">On its own private bridge —</text>
+        <text class="t-note" x="140" y="848">not on any LAN network.</text>
+        <text class="t-meta" x="140" y="870">private</text>
       </g>
       <g>
-        <rect x="410" y="656" width="270" height="112" rx="7" class="card"/>
-        <text class="t-name" x="426" y="682">taster-couchdb</text>
-        <text class="t-role" x="426" y="700">Pipeline state for taster, same</text>
-        <text class="t-note" x="426" y="718">pattern as podcast-digest's. Kept</text>
-        <text class="t-note" x="426" y="732">separate from the shared vault.</text>
-        <text class="t-meta" x="426" y="754">private</text>
-      </g>
-      <g>
-        <rect x="696" y="656" width="536" height="112" rx="7" fill="var(--vault-bg)" stroke="var(--vault)" stroke-opacity=".4"/>
-        <text class="t-name" x="712" y="682">vault CouchDB</text>
-        <text class="t-note" x="712" y="700">One server, two databases, one CORS config.</text>
-        <rect x="712" y="712" width="244" height="46" rx="6" fill="var(--panel)" stroke="var(--line)"/>
-        <text class="t-name" x="724" y="732" style="font-size:11.5px">the_brain</text>
-        <text class="t-note" x="724" y="748">security vault · 5 writers</text>
-        <rect x="968" y="712" width="244" height="46" rx="6" fill="var(--panel)" stroke="var(--line)"/>
-        <text class="t-name" x="980" y="732" style="font-size:11.5px">hobby</text>
-        <text class="t-note" x="980" y="748">taster · family-calendar</text>
+        <rect x="410" y="772" width="822" height="112" rx="7" fill="var(--vault-bg)" stroke="var(--vault)" stroke-opacity=".4"/>
+        <text class="t-name" x="426" y="798">vault CouchDB</text>
+        <text class="t-note" x="426" y="816">One server — the taster-couchdb container, on qnet for LiveSync and on taster's bridge — two databases, one CORS config.</text>
+        <rect x="426" y="828" width="390" height="46" rx="6" fill="var(--panel)" stroke="var(--line)"/>
+        <text class="t-name" x="438" y="848" style="font-size:11.5px">the_brain</text>
+        <text class="t-note" x="438" y="864">security vault · 5 writers</text>
+        <rect x="826" y="828" width="390" height="46" rx="6" fill="var(--panel)" stroke="var(--line)"/>
+        <text class="t-name" x="838" y="848" style="font-size:11.5px">hobby</text>
+        <text class="t-note" x="838" y="864">taster · family-calendar</text>
+        <text class="t-meta" x="1216" y="798" text-anchor="end">backed up nightly by homelab-jobs</text>
       </g>
 
       <!-- ─── Mac ───────────────────────────────────────────── -->
-      <rect x="1288" y="202" width="432" height="280" rx="9" class="zone-fill" stroke="var(--mac)" stroke-opacity=".3"/>
+      <rect x="1288" y="202" width="432" height="346" rx="9" class="zone-fill" stroke="var(--mac)" stroke-opacity=".3"/>
       <text class="t-panel" x="1312" y="232">The Mac</text>
       <text class="t-meta" x="1312" y="251">where the heavy compute and every deploy starts</text>
 
@@ -276,14 +301,20 @@
         <text class="t-name" x="1330" y="429">Obsidian · vault-sync</text>
         <text class="t-note" x="1330" y="449">Mirrors each repo's docs into the vault</text>
       </g>
+      <g>
+        <rect x="1312" y="472" width="384" height="58" rx="6" class="card"/>
+        <text class="t-name" x="1330" y="497">status.sh</text>
+        <text class="t-note" x="1330" y="517">Tests, git, packages, container state — what only the Mac sees</text>
+      </g>
 
       <!-- ─── devices ───────────────────────────────────────── -->
+      <g transform="translate(0,228)">
       <rect x="1288" y="512" width="432" height="186" rx="9" class="zone-fill" stroke="var(--vault)" stroke-opacity=".3"/>
       <text class="t-panel" x="1312" y="542">Reading devices</text>
       <text class="t-meta" x="1312" y="561">LiveSync only — iCloud was dropped 2026-09-01</text>
 
-      <path class="flow flow-vault" d="M1210,606 H1282" marker-start="url(#a-vault)" marker-end="url(#a-vault)"/>
-      <text class="t-edge" x="1246" y="598" text-anchor="middle" fill="var(--vault)">LiveSync</text>
+      <path class="flow flow-vault" d="M1234,602 H1282" marker-start="url(#a-vault)" marker-end="url(#a-vault)"/>
+      <text class="t-edge" x="1258" y="594" text-anchor="middle" fill="var(--vault)">LiveSync</text>
 
       <g>
         <rect x="1312" y="578" width="120" height="48" rx="6" class="card"/>
@@ -299,6 +330,7 @@
       </g>
       <text class="t-note" x="1312" y="652">One sync channel on every device. Two of them</text>
       <text class="t-note" x="1312" y="670">racing is what created 54 duplicate notes.</text>
+      </g>
     </svg>
   </div>
 

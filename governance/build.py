@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
 """Build the governance site: status, architecture and models, as static files.
 
-    ./build.py                 write deploy-out/site/
+    ./build.py                 write deploy-out/site/ — architecture and models
     ./build.py --out DIR       write somewhere else
+    ./build.py --status-only   write only index.html (the NAS runs this)
 
-Status is generated from the collector's last snapshot (homelab/status), so it is
-only ever as fresh as that run — every age on the page is re-computed in the
-browser against the viewer's clock, and a banner appears when the snapshot is
-older than the collector's own stale threshold. Architecture is hand-maintained
+Two builders, because the pages have different sources. Architecture and models
+read the repos and so can only be built on the Mac. Status is generated from the
+collector's snapshot and is rebuilt on the NAS by the homelab-jobs container after
+every live run, so it keeps refreshing with the Mac shut. It is only ever as fresh
+as that run — every age on the page is re-computed in the browser against the
+viewer's clock, and a banner appears when the snapshot is older than the
+collector's own stale threshold. Architecture is hand-maintained
 (content/architecture.*). The models page joins two things: the model ids found
 in the repos' config files (so it cannot drift from what is configured) and a
 hand-maintained hardware table, flagging any configured id the table does not
@@ -62,7 +66,7 @@ STALE_JS = """
     var m=(Date.now()-Date.parse(el.getAttribute("data-ts")))/60000;
     if(m>+el.getAttribute("data-stale-min")){
       b.textContent="This page has not been refreshed for "+el.textContent.replace(" ago","")+
-        " — the collector on the Mac has not published. Treat everything below as old.";
+        " — the collector has not run. Treat everything below as old.";
       b.classList.add("on");
     }else b.classList.remove("on");
   }
@@ -177,17 +181,21 @@ def models_page() -> str:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--out", type=Path, default=HERE / "deploy-out" / "site")
+    ap.add_argument("--status-only", action="store_true", help="write only index.html")
     args = ap.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
-    built = {
-        "index.html": status_page(),
-        "architecture.html": architecture_page(),
-        "models.html": models_page(),
-    }
+    if args.status_only:
+        built = {"index.html": status_page()}
+    else:
+        built = {"architecture.html": architecture_page(), "models.html": models_page()}
     for name, text in built.items():
-        (args.out / name).write_text(text, encoding="utf-8")
-    (args.out / "built-at.txt").write_text(datetime.now(UTC).isoformat() + "\n")
-    print(f"✓ built {len(built)} pages → {args.out}")
+        # Write beside, then rename: nginx serves this file while it is replaced.
+        tmp = args.out / f".{name}.tmp"
+        tmp.write_text(text, encoding="utf-8")
+        tmp.replace(args.out / name)
+    if not args.status_only:
+        (args.out / "built-at.txt").write_text(datetime.now(UTC).isoformat() + "\n")
+    print(f"✓ built {len(built)} page(s) → {args.out}")
     return 0
 
 

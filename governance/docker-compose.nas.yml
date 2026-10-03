@@ -29,6 +29,8 @@ services:
 
     volumes:
       - NAS_APP_DIR_PLACEHOLDER/site:/usr/share/nginx/html:ro
+      # The status page, written by the homelab-jobs container (../nas-jobs/).
+      - NAS_JOBS_DIR_PLACEHOLDER/site:/usr/share/nginx/live:ro
 
     networks:
       - homelab-internal
