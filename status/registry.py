@@ -12,6 +12,7 @@ failure the page exists to prevent.
 
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -61,6 +62,10 @@ class App:
     #: dynamic-config.yml, not tracked in any repo) are actually reachable this
     #: way; `health` must name one of those or the probe just gets a 302.
     traefik_host: str | None = None
+    #: In-network address of the app itself, bypassing Traefik. Used only for
+    #: `extra` endpoints that sit behind the login gate: the jobs container is on
+    #: the same bridge as the app, and the gate is Traefik's, not the app's.
+    internal_url: str | None = None
     #: Set when this app is a second running *instance* of another App's
     #: codebase (news-digest / security-digest: one repo, two deploys). Skips
     #: this entry in the repo-level slow checks (tests, packages, line counts)
@@ -85,6 +90,7 @@ APPS: tuple[App, ...] = (
         port=8080,
         health="/healthz",
         app_dir="/share/Container/podcast-digest",
+        internal_url="http://podcast-agent:80",
         extra={"status": "/api/v1/status", "runs": "/api/v1/runs/last"},
     ),
     App(
@@ -161,8 +167,14 @@ APPS: tuple[App, ...] = (
         repo="taster",
         container="taster-worker",
         # The worker polls a cloud relay outbound and listens for nothing, so
-        # there is no address to probe. Container state is the whole signal.
+        # container state is the signal for it. The health probe is the
+        # sibling taster-admin container (same image, the data-maintenance UI),
+        # reached only through Traefik like podcast-digest: /healthz is the one
+        # unauthenticated path, everything else stays behind the login gate.
         ip_var=None,
+        traefik_host="taster-admin.servers.zou",
+        port=8088,
+        health="/healthz",
         app_dir="/share/Container/taster",
         shipped_config=None,
         venv=None,
@@ -254,6 +266,10 @@ def deploy_env(app: App) -> dict[str, str]:
 
 
 def app_env(app: App) -> dict[str, str]:
+    if _TARGETS is not None:
+        # On the NAS there is no repo to read a .env from; the one secret a
+        # probe needs arrives in the container's own environment.
+        return {k: os.environ[k] for k in (app.auth_var,) if k and k in os.environ}
     return read_env(repo_path(app) / ".env")
 
 
@@ -272,6 +288,49 @@ def traefik_lan_ip() -> str | None:
     return env.get("TRAEFIK_LAN_IP")
 
 
+#: Set by `load_targets` inside the homelab-jobs container, where none of the
+#: Mac's per-project `.deploy.env` files exist. None -> resolve from them as usual.
+_TARGETS: dict[str, dict[str, str | None]] | None = None
+
+#: How the jobs container reaches Traefik: by name, over homelab-internal. The
+#: Mac cannot do this and goes via Traefik's LAN address instead.
+TRAEFIK_INTERNAL_URL = "http://traefik-1:80"
+
+
+def load_targets(path: Path) -> None:
+    """Switch `base_url`/`app_env` to a pre-resolved table (see `export_targets`)."""
+    global _TARGETS
+    _TARGETS = json.loads(path.read_text(encoding="utf-8"))
+
+
+def export_targets() -> dict[str, dict[str, str | None]]:
+    """Where the jobs container should probe each app — no secrets in it.
+
+    Resolved here, on the Mac, because only the Mac has the `.deploy.env` files
+    that say which apps still hold a qnet address. Everything else is reached
+    through Traefik by container name. The one secret a probe needs (an admin
+    key) is named, not carried: it travels in the container's own environment.
+    """
+    out: dict[str, dict[str, str | None]] = {}
+    for app in APPS:
+        ip = deploy_env(app).get(app.ip_var) if app.ip_var else None
+        if ip:
+            out[app.name] = {"url": f"http://{ip}:{app.port}", "auth_env": app.auth_var}
+        elif app.traefik_host:
+            out[app.name] = {"url": TRAEFIK_INTERNAL_URL, "auth_env": app.auth_var}
+        if app.name in out and app.internal_url:
+            out[app.name]["extra_url"] = app.internal_url
+    return out
+
+
+def extra_base_url(app: App) -> str | None:
+    """Like `base_url`, but for `extra` endpoints that bypass the login gate."""
+    if _TARGETS is not None:
+        target = _TARGETS.get(app.name)
+        return (target.get("extra_url") or target["url"]) if target else None
+    return base_url(app)
+
+
 def base_url(app: App) -> str | None:
     """`http://host:port`, or None when the app exposes nothing to probe.
 
@@ -280,6 +339,9 @@ def base_url(app: App) -> str | None:
     `App`). Traefik listens on :80 for the `web` entrypoint regardless of any
     individual app's own port.
     """
+    if _TARGETS is not None:
+        target = _TARGETS.get(app.name)
+        return target["url"] if target else None
     if app.ip_var:
         ip = deploy_env(app).get(app.ip_var)
         if ip:

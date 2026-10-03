@@ -1,16 +1,20 @@
 #!/usr/bin/env bash
 # One place that answers "is everything fine?" across the homelab.
 #
-#   ./status.sh            collect the fast signals, render, print the summary
-#   ./status.sh --fast     health, containers, deploy drift, backups, vault
+#   ./status.sh            Mac-side checks, push them to the NAS, pull the live
+#                          signals back, render, print the summary
+#   ./status.sh --fast     the same (containers, revisions, config drift)
 #   ./status.sh --slow     test suites and outdated packages (minutes)
-#   ./status.sh --print    print the last snapshot without collecting
-#   ./status.sh --html     re-render status.html from the last snapshot
-#   ./status.sh --publish  push the governance site from the last snapshot
+#   ./status.sh --print    pull the NAS's live signals, print the summary
+#   ./status.sh --html     pull the NAS's live signals, re-render status.html
+#   ./status.sh --publish  push the architecture/models pages from the last snapshot
 #
-# Runs on the Mac, and has to: the source-side signals (tests, unpushed work,
-# outdated packages, the commit a running image was built from) exist nowhere
-# else, and the NAS host cannot reach its own macvlan children to probe them.
+# Split in two, by what each side can see:
+#   NAS (nas-jobs/, a container) — health probes, backups, the vault: anything
+#     that needs only the network. It runs whether or not the laptop is awake,
+#     and renders the status page the governance site serves.
+#   Mac (this script) — what only exists here: test suites, unpushed work,
+#     outdated packages, and the commit each running image was built from.
 #
 # Nothing here fails the run because one app is down — a collector that aborts
 # on the first problem is useless on the day it is needed. Every section carries
@@ -18,7 +22,7 @@
 # as healthy.
 #
 # The collectors are in status/; this is the entry point, named like
-# vault-sync.sh and backup-vault.sh beside it.
+# vault-sync.sh beside it.
 set -euo pipefail
 
 cd "$(dirname "$0")"
@@ -49,9 +53,10 @@ if [ -f "$LOG" ] && [ "$(wc -c < "$LOG")" -gt 262144 ]; then
   tail -n 400 "$LOG" > "${LOG}.tmp" && mv "${LOG}.tmp" "$LOG"
 fi
 
-# Push the governance pages (governance/) to the NAS. A failure here must not
-# fail the collection — but it must not be silent either: the site's own
-# staleness banner is the backstop, this line is the early warning.
+# Push the Architecture and Models pages (governance/) to the NAS — the only
+# governance pages the Mac still renders. A failure here must not fail the
+# collection, but must not be silent either: the site's own staleness banner is
+# the backstop, this line is the early warning.
 publish_governance() {
   [ -f governance/.deploy.env ] || return 0
   local out
@@ -64,21 +69,41 @@ publish_governance() {
   fi
 }
 
+# Hand the Mac's snapshots to the NAS so its page includes them. Best effort: the
+# NAS being unreachable must not lose the local result.
+push_to_nas() {
+  [ -f nas-jobs/.deploy.env ] || return 0
+  local out
+  if ! out="$(PYTHON="$PY" nas-jobs/deploy push 2>&1)"; then
+    echo "  ✗ could not push to the NAS — its page will show these checks as stale:"
+    printf '%s\n' "$out" | tail -n 3 | sed 's/^/    /'
+  fi
+}
+
+# Fetch the NAS's live.json. Without it the summary falls back to whatever the
+# Mac last had, and says how old it is.
+pull_from_nas() {
+  [ -f nas-jobs/.deploy.env ] || return 0
+  "$PY" status/collect.py --pull >/dev/null 2>&1 || echo "  ✗ could not pull live signals from the NAS (showing the last copy)" >&2
+}
+
 case "${1:-}" in
   --slow)
     "$PY" status/collect.py --slow
+    push_to_nas
     publish_governance
     exit 0 ;;
-  --print) exec "$PY" status/summary.py ;;
-  --html)  exec "$PY" status/render.py ;;
-  --publish) "$PY" status/render.py >/dev/null; publish_governance; exit 0 ;;
+  --print) pull_from_nas; exec "$PY" status/summary.py ;;
+  --html)  pull_from_nas; exec "$PY" status/render.py ;;
+  --publish) pull_from_nas; "$PY" status/render.py >/dev/null; publish_governance; exit 0 ;;
   --fast|"") ;;
   *) echo "usage: $0 [--fast|--slow|--print|--html|--publish]" >&2; exit 2 ;;
 esac
 
 "$PY" status/collect.py --fast >/dev/null
+push_to_nas
+pull_from_nas
 "$PY" status/render.py >/dev/null
 "$PY" status/summary.py
 echo
 echo "  page: ${DIR}/status.html"
-publish_governance

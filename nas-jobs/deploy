@@ -1,0 +1,177 @@
+#!/usr/bin/env bash
+# Deploy the homelab's scheduled jobs to the NAS: vault backups, the vault
+# doctor, and the live status collector. Run it on the Mac.
+#
+#   ./deploy            build the image, ship it, bring it up
+#   ./deploy ship       build and ship only — nothing restarted
+#   ./deploy apply      bring it up from what is already on the NAS
+#   ./deploy push       send the Mac's snapshots (deploy checks, source scan) to the NAS
+#   ./deploy run JOB    run one job now (live, vault-doctor, backup-the_brain, backup-hobby)
+#   ./deploy render     write deploy-out/ (compose, targets.json, jobs.env) and stop
+#   ./deploy check      is it healthy, fresh, and are the backups recent
+#   ./deploy logs       follow the container's log
+#
+# `push` is what ../status.sh runs after the Mac-side collector passes. The other
+# verbs follow the contract in ../README.md.
+set -euo pipefail
+
+cd "$(dirname "$0")"
+. ../deploy.lib.sh
+nas_load_env "$PWD" "/share/Container/homelab-jobs"
+
+LIFECYCLE=compose
+TAG="homelab-jobs:1"
+NAS_COMPOSE="docker-compose.nas.yml"
+OUT="deploy-out"
+JOBS_BACKUP_DIR="${JOBS_BACKUP_DIR:-/share/CACHEDEV3_DATA/example/homelab-backups/vault-couchdb}"
+STATUS_DIR="${HOMELAB_STATUS_DIR:-$HOME/.homelab/status}"
+# Backups older than this are called out by `check` (the jobs run daily).
+BACKUP_STALE_SECONDS=$((30 * 3600))
+
+pick_python() {
+  local c
+  for c in "${PYTHON:-}" python3.14 python3.13 python3.12 python3.11 python3; do
+    [ -n "$c" ] || continue
+    if command -v "$c" >/dev/null 2>&1 &&
+       "$c" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)' 2>/dev/null; then
+      command -v "$c"; return 0
+    fi
+  done
+  die "no python >= 3.11 found"
+}
+
+do_render() {
+  [ "$JOBS_BACKUP_DIR" != "/share/CACHEDEV3_DATA/example/homelab-backups/vault-couchdb" ] \
+    || die "JOBS_BACKUP_DIR is still the example value. Set it in .deploy.env."
+  local user
+  user="$(nas_ssh 'echo "$(id -u):$(id -g)"')"
+  nas_render "$NAS_COMPOSE" "${OUT}/${NAS_COMPOSE}" \
+    "s#NAS_APP_DIR_PLACEHOLDER#${NAS_APP_DIR}#g; s#JOBS_BACKUP_DIR_PLACEHOLDER#${JOBS_BACKUP_DIR}#g; s#JOBS_USER_PLACEHOLDER#${user}#g"
+  "$(pick_python)" ./render.py "$OUT" || die "render.py reported problems — fix them before deploying."
+  echo "✓ Wrote ${OUT}/targets.json and ${OUT}/jobs.env (credentials, mode 600, git-ignored)"
+}
+
+# The image's build context: the few files it runs, laid out as they sit in the
+# repo so their relative imports (status/, governance/ beside nas-jobs/) hold.
+stage_context() {
+  local ctx="${OUT}/ctx"
+  rm -rf "$ctx"
+  mkdir -p "$ctx/app/status" "$ctx/app/governance" "$ctx/app/nas-jobs"
+  cp Dockerfile "$ctx/"
+  cp ../status/collect.py ../status/registry.py ../status/render.py "$ctx/app/status/"
+  cp ../governance/build.py "$ctx/app/governance/"
+  cp ../backup-vault.sh ../vault-doctor.py "$ctx/app/"
+  cp scheduler.py "$ctx/app/nas-jobs/"
+  chmod +x "$ctx/app/backup-vault.sh" "$ctx/app/vault-doctor.py"
+  echo "$ctx"
+}
+
+do_ship() {
+  nas_require_reachable
+  do_render
+  local ctx
+  ctx="$(stage_context)"
+  nas_ship_image "$TAG" "$ctx"
+  nas_ssh "mkdir -p '${NAS_APP_DIR}/data' '${NAS_APP_DIR}/site' '${JOBS_BACKUP_DIR}'" \
+    || die "couldn't create the working directories on the NAS."
+  nas_put "${OUT}/${NAS_COMPOSE}" "${NAS_APP_DIR}/${NAS_COMPOSE}"
+  nas_put "${OUT}/jobs.env" "${NAS_APP_DIR}/jobs.env" 600
+  nas_put "${OUT}/targets.json" "${NAS_APP_DIR}/data/targets.json"
+}
+
+do_apply() {
+  nas_require_reachable
+  nas_ssh "cd '${NAS_APP_DIR}' && mkdir -p ${NAS_DOCKER_CONFIG} && ${NAS_DOCKER_ENV} '${NAS_DOCKER_BIN}' compose -f ${NAS_COMPOSE} up -d" \
+    || die "compose up failed on the NAS."
+  nas_ssh "cd '${NAS_APP_DIR}' && ${NAS_DOCKER_ENV} '${NAS_DOCKER_BIN}' compose -f ${NAS_COMPOSE} ps --format 'table {{.Name}}\t{{.Status}}'"
+}
+
+do_push() {
+  nas_require_reachable
+  local f pushed=0
+  for f in fast slow; do
+    [ -s "${STATUS_DIR}/${f}.json" ] || continue
+    nas_put "${STATUS_DIR}/${f}.json" "${NAS_APP_DIR}/data/${f}.json"
+    pushed=$((pushed + 1))
+  done
+  [ "$pushed" -gt 0 ] || die "no snapshots in ${STATUS_DIR} to push — run ../status.sh first."
+  echo "✓ pushed ${pushed} snapshot(s) to the NAS"
+}
+
+do_run() {
+  local job="${1:-}"
+  [ -n "$job" ] || die "which job? (live, vault-doctor, backup-the_brain, backup-hobby)"
+  nas_require_reachable
+  nas_ssh "'${NAS_DOCKER_BIN}' exec homelab-jobs python3 /app/nas-jobs/scheduler.py --run '${job}'"
+}
+
+do_check() {
+  nas_require_reachable
+  local bad=0 now age newest file db
+  nas_ssh "'${NAS_DOCKER_BIN}' ps --filter name=homelab-jobs --format 'table {{.Names}}\t{{.Status}}'"
+  if nas_ssh "'${NAS_DOCKER_BIN}' ps --filter name=homelab-jobs --filter health=healthy -q" | grep -q .; then
+    echo "✓ homelab-jobs: healthy"
+  else
+    echo "✗ homelab-jobs: not healthy"; bad=1
+  fi
+  now="$(nas_ssh 'date +%s')"
+  newest="$(nas_ssh "stat -c %Y '${NAS_APP_DIR}/data/live.json' 2>/dev/null || echo 0")"
+  age=$((now - newest))
+  if [ "$newest" -gt 0 ] && [ "$age" -lt 5400 ]; then
+    echo "✓ live.json refreshed $((age / 60)) min ago"
+  else
+    echo "✗ live.json is missing or older than 90 min"; bad=1
+  fi
+  for db in the_brain hobby; do
+    file="$(nas_ssh "ls -1t '${JOBS_BACKUP_DIR}/${db}-'*.json.gz 2>/dev/null | head -n 1")"
+    if [ -z "$file" ]; then
+      echo "✗ ${db}: no backup in ${JOBS_BACKUP_DIR}"; bad=1; continue
+    fi
+    newest="$(nas_ssh "stat -c %Y '${file}'")"
+    age=$((now - newest))
+    if [ "$age" -lt "$BACKUP_STALE_SECONDS" ]; then
+      echo "✓ ${db}: newest backup $((age / 3600)) h old ($(basename "$file"))"
+    else
+      echo "✗ ${db}: newest backup is $((age / 3600)) h old"; bad=1
+    fi
+  done
+  return "$bad"
+}
+
+do_logs() {
+  nas_ssh -t "'${NAS_DOCKER_BIN}' logs -f --tail 200 homelab-jobs"
+}
+
+usage() {
+  sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'
+}
+
+NO_APPLY=false
+VERB="" ARG=""
+for arg in "$@"; do
+  nas_global_flag "$arg" && continue
+  if [ "$VERB" = run ] && [ -z "$ARG" ]; then ARG="$arg"; continue; fi
+  case "$arg" in
+    ship|apply|check|render|logs|up|push|run|help) VERB="$arg" ;;
+    *) die "unknown argument: ${arg}. Try ./deploy help" ;;
+  esac
+done
+
+case "${VERB:-up}" in
+  help)   usage ;;
+  render) nas_require_reachable; do_render ;;
+  ship)   do_ship ;;
+  apply)  do_apply ;;
+  push)   do_push ;;
+  run)    do_run "$ARG" ;;
+  check)  do_check ;;
+  logs)   do_logs ;;
+  up)
+    do_ship
+    if [ "$NO_APPLY" = true ]; then
+      echo "== shipped; not applying (--no-apply) =="
+    else
+      do_apply
+    fi
+    ;;
+esac

@@ -1,0 +1,71 @@
+# The homelab's scheduled jobs on the NAS: vault backups, the vault doctor, and
+# the live status collector. Shipped by ./deploy and brought up with plain
+# `docker compose up -d` over ssh — see ../README.md for why none of these
+# projects are Container Station "Applications".
+#
+# homelab-internal only: it listens for nothing and publishes nothing. It reaches
+# Traefik and the apps by container name, and the vault's CouchDB by its LAN
+# address the way the other apps do. No docker socket is mounted — a container
+# holding the vault's credentials should not also be root on the host.
+
+name: homelab-jobs
+
+services:
+  homelab-jobs:
+    image: homelab-jobs:1
+    container_name: homelab-jobs
+    restart: unless-stopped
+    # The account that owns the bind-mounted directories on the NAS, so files it
+    # writes (the backups included) belong to a login that can read them back.
+    user: "JOBS_USER_PLACEHOLDER"
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "3"
+
+    # Everything it writes is under /data, /site, /backups or /tmp; read_only
+    # makes that provable.
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    # Cheap insurance on a box that was measured at 935 MB free: if a job ever
+    # balloons, it is this container that is killed, not Open WebUI.
+    mem_limit: 384m
+
+    # Vault credentials and the one app admin key a probe needs. Rendered by
+    # ./deploy from the Mac's git-ignored .env files; never in this file.
+    env_file:
+      - jobs.env
+    environment:
+      # POSIX rule, not a zoneinfo name: musl reads it without tzdata installed.
+      TZ: CET-1CEST,M3.5.0,M10.5.0/3
+      HOMELAB_STATUS_DIR: /data
+      HOMELAB_TARGETS: /data/targets.json
+      HOMELAB_VAULT_HEALTH_FILE: /data/vault-health.json
+      VAULT_BACKUP_DIR: /backups
+      JOBS_SITE: /site
+
+    volumes:
+      - NAS_APP_DIR_PLACEHOLDER/data:/data
+      - NAS_APP_DIR_PLACEHOLDER/site:/site
+      - JOBS_BACKUP_DIR_PLACEHOLDER:/backups
+
+    healthcheck:
+      # The scheduler touches this every 20 s. A wedged loop fails it.
+      test: ["CMD-SHELL", "test $$(( $$(date +%s) - $$(cat /tmp/heartbeat) )) -lt 120"]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+    networks:
+      - homelab-internal
+
+networks:
+  homelab-internal:
+    external: true

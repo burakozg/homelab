@@ -88,11 +88,30 @@ class Vault:
         except urllib.error.HTTPError as exc:
             return exc.code, json.loads(exc.read() or b"{}")
 
-    def all_docs(self) -> list[dict]:
-        status, body = self._request("GET", "/_all_docs?include_docs=true")
-        if status != 200:
-            raise SystemExit(f"FATAL: could not list documents: HTTP {status} {body}")
-        return [row["doc"] for row in body["rows"] if "doc" in row]
+    def iter_docs(self, page: int = 500):
+        """Every document, a page at a time.
+
+        One `_all_docs?include_docs=true` for the whole database is a 60 MB
+        response; read and parsed in one go it peaked at ~520 MB resident. That
+        is nothing on a laptop and an OOM-kill on the NAS, where this now runs.
+        Paging keeps the raw response and the parsed copy small and short-lived;
+        what stays is only what `scan` keeps.
+        """
+        startkey: str | None = None
+        while True:
+            query = f"/_all_docs?include_docs=true&limit={page + 1}"
+            if startkey is not None:
+                query += "&startkey=" + quote(json.dumps(startkey), safe="")
+            status, body = self._request("GET", query)
+            if status != 200:
+                raise SystemExit(f"FATAL: could not list documents: HTTP {status} {body}")
+            rows = body["rows"]
+            for row in rows[:page]:
+                if "doc" in row:
+                    yield row["doc"]
+            if len(rows) <= page:
+                return
+            startkey = rows[page]["id"]
 
     def put(self, doc_id: str, body: dict) -> int:
         status, _ = self._request("PUT", f"/{quote(doc_id, safe='')}", body)
@@ -147,13 +166,13 @@ def _dedupe_frontmatter(lines: list[str]) -> tuple[list[str], list[str]]:
 
 
 def scan(vault: Vault) -> dict:
-    docs = vault.all_docs()
-    chunks = {d["_id"]: d["data"] for d in docs if d.get("type") == "leaf"}
-    entries = [
-        d
-        for d in docs
-        if d.get("type") == "plain" and not d.get("deleted") and "path" in d
-    ]
+    chunks: dict[str, str] = {}
+    entries: list[dict] = []
+    for d in vault.iter_docs():
+        if d.get("type") == "leaf":
+            chunks[d["_id"]] = d["data"]
+        elif d.get("type") == "plain" and not d.get("deleted") and "path" in d:
+            entries.append(d)
 
     all_stubs = [e for e in entries if int(e.get("size") or 0) == 0]
     stubs = [e for e in all_stubs if not e["path"].startswith(_HUMAN_OWNED_PREFIXES)]

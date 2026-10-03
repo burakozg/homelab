@@ -249,6 +249,47 @@ class TestVaultHealthIsSurfacedByTone(unittest.TestCase):
         self.assertIn("hugging-face/huggingface", alerts[0][1])
 
 
+class TestTiersMerge(unittest.TestCase):
+    """The NAS's live tier is laid over the Mac's deploy checks, per app."""
+
+    def _load(self, mac, live):
+        import json
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as d:
+            fast, lv = Path(d) / "fast.json", Path(d) / "live.json"
+            if mac is not None:
+                fast.write_text(json.dumps(mac))
+            if live is not None:
+                lv.write_text(json.dumps(live))
+            saved = collect.FAST_FILE, collect.LIVE_FILE, collect.SLOW_FILE
+            collect.FAST_FILE, collect.LIVE_FILE, collect.SLOW_FILE = fast, lv, Path(d) / "none.json"
+            try:
+                return collect.load()
+            finally:
+                collect.FAST_FILE, collect.LIVE_FILE, collect.SLOW_FILE = saved
+
+    def test_live_health_wins_and_the_mac_supplies_container_state(self):
+        merged = self._load(
+            {"collected_at": "mac", "apps": {"a": {"container": {"state": "running"}, "health": {"ok": False}}}},
+            {"collected_at": "live", "apps": {"a": {"health": {"ok": True}}}},
+        )["fast"]
+        self.assertTrue(merged["apps"]["a"]["health"]["ok"])
+        self.assertEqual(merged["apps"]["a"]["container"]["state"], "running")
+
+    def test_the_page_age_is_the_live_tier_and_the_deploy_age_is_kept_apart(self):
+        merged = self._load({"collected_at": "mac", "apps": {}}, {"collected_at": "live", "apps": {}})["fast"]
+        self.assertEqual(merged["collected_at"], "live")
+        self.assertEqual(merged["deploy_collected_at"], "mac")
+
+    def test_without_a_live_tier_the_mac_stands_alone(self):
+        merged = self._load({"collected_at": "mac", "apps": {"a": {}}}, None)["fast"]
+        self.assertEqual(merged["collected_at"], "mac")
+
+    def test_nothing_at_all_is_an_empty_snapshot_not_a_crash(self):
+        self.assertEqual(self._load(None, None), {})
+
+
 class TestNothingLeaks(unittest.TestCase):
     def test_the_registry_holds_no_real_addresses(self) -> None:
         """Real values live in each project's git-ignored .deploy.env."""

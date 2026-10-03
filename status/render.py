@@ -17,7 +17,10 @@ from datetime import UTC, datetime
 from typing import Any
 
 #: Anything older than this is drawn as stale rather than reported as fact.
-STALE_MINUTES = {"fast": 90, "slow": 36 * 60}
+#: "deploy" is the Mac-side comparison of the NAS with source (container state,
+#: revisions, drift). It only refreshes while the Mac is awake, so it is allowed
+#: to be older than the live signals before it is drawn as stale.
+STALE_MINUTES = {"fast": 90, "slow": 36 * 60, "deploy": 8 * 60}
 
 
 def _age(iso: str | None) -> tuple[float, str]:
@@ -339,6 +342,9 @@ def render_body(snapshot: dict[str, Any]) -> tuple[str, str]:
     slow_mins, slow_age = _age(slow.get("collected_at"))
     fast_stale = fast_mins > STALE_MINUTES["fast"]
     slow_stale = slow_mins > STALE_MINUTES["slow"]
+    deploy = {"collected_at": fast.get("deploy_collected_at")}
+    deploy_mins, deploy_age = _age(deploy["collected_at"])
+    deploy_stale = deploy_mins > STALE_MINUTES["deploy"]
 
     apps = fast.get("apps", {})
     healthy = sum(
@@ -416,6 +422,7 @@ def render_body(snapshot: dict[str, Any]) -> tuple[str, str]:
   </div>
   <div class="freshness">
     <div class="{'stale' if fast_stale else ''}"><span>live signals</span><b{_ts(fast, 'fast')}>{e(fast_age)}</b></div>
+    <div class="{'stale' if deploy_stale else ''}"><span>container &amp; deploy checks</span><b{_ts(deploy, 'deploy')}>{e(deploy_age)}</b></div>
     <div class="{'stale' if slow_stale else ''}"><span>source scan</span><b{_ts(slow, 'slow')}>{e(slow_age)}</b></div>
     <div><span>healthy / running</span><b>{healthy}/{len(apps)} · {running}/{len(apps)}</b></div>
     <div><span>tests</span><b>{passed:,} pass{f' · {failed} fail' if failed else ''}</b></div>

@@ -5,11 +5,11 @@
 # taster/INSTALL.md and tasting-log-design.md §7). Losing this loses every
 # note, every topic page, every tasting record — everything.
 #
-# Runs from the Mac, not the NAS: the vault's CouchDB is LAN-reachable
-# directly (unlike podcast-digest's own state DB, which is intentionally
-# loopback-only), and running the dump here means the backup exists off the
-# NAS from the moment it's created — a single NAS disk failure can't take out
-# both the live data and its backup together. Modelled on
+# Runs on the NAS, in the homelab-jobs container (nas-jobs/, 03:30 and 03:45),
+# so a closed laptop no longer means a missed backup. It writes to a different
+# NAS volume than the live CouchDB (see nas-jobs/README.md) — the property the
+# old Mac-side run gave for free is now a mount choice, so keep it that way.
+# Still runnable by hand from the Mac for a one-off dump. Modelled on
 # podcast-digest/scripts/backup.sh, pointed at the vault instead of that
 # app's own database.
 #
@@ -47,6 +47,9 @@ TMP="$OUT_DIR/.${COUCHDB_DB}-${STAMP}.json.gz.tmp"
 FINAL="$OUT_DIR/${COUCHDB_DB}-${STAMP}.json.gz"
 
 echo "Backing up ${COUCHDB_URL}/${COUCHDB_DB} -> ${FINAL}"
+# A failed download must not leave a half-written dump behind to be mistaken
+# for one (it is hidden, but a week of them would still fill the volume).
+trap 'rm -f "$TMP"' EXIT
 
 # include_docs gives full bodies; attachments=true inlines LiveSync's chunk
 # data (and taster's tasting-photo blobs) as base64 so nothing is silently
@@ -59,18 +62,27 @@ curl -fsS --max-time 900 \
 
 # Verify before publishing: a truncated backup that looks fine is worse than
 # an obvious failure, because it's only discovered when it's needed.
-DOC_COUNT="$(gzip -dc "$TMP" | python3 -c '
-import json, sys
-payload = json.load(sys.stdin)
-rows = payload.get("rows")
-if rows is None:
-    print("no rows key in response", file=sys.stderr)
-    raise SystemExit(1)
-if len(rows) == 0:
-    print("zero rows — refusing to publish an empty dump as a backup", file=sys.stderr)
-    raise SystemExit(1)
-print(len(rows))
-')"
+#
+# Streamed, never parsed: the dump is ~60 MB of JSON, and loading that into
+# Python costs several hundred MB — fine on a laptop, an OOM-kill on the
+# memory-tight NAS this runs on. Three cheap checks cover the failure modes
+# instead: `gzip -t` catches a cut-off download (the CRC trailer is missing),
+# the header's total_rows catches an empty database, and the closing `]}`
+# catches a body that stopped mid-array.
+gzip -t "$TMP" || { echo "backup is not a valid gzip stream — refusing to publish" >&2; rm -f "$TMP"; exit 1; }
+HEAD="$(gzip -dc "$TMP" 2>/dev/null | head -c 200 || true)"
+DOC_COUNT="$(printf '%s' "$HEAD" | sed -n 's/^{"total_rows":\([0-9][0-9]*\),.*/\1/p' | head -n 1)"
+if [ -z "$DOC_COUNT" ]; then
+  echo "no total_rows in response — refusing to publish" >&2; rm -f "$TMP"; exit 1
+fi
+if [ "$DOC_COUNT" -eq 0 ]; then
+  echo "zero rows — refusing to publish an empty dump as a backup" >&2; rm -f "$TMP"; exit 1
+fi
+TAIL="$(gzip -dc "$TMP" | tail -c 16 | tr -d ' \r\n\t')"
+case "$TAIL" in
+  *"]}") ;;
+  *) echo "dump does not end in ]} — truncated, refusing to publish" >&2; rm -f "$TMP"; exit 1 ;;
+esac
 
 mv "$TMP" "$FINAL"
 echo "OK: ${DOC_COUNT} documents, $(du -h "$FINAL" | cut -f1)"

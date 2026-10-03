@@ -12,3 +12,7 @@ __pycache__/
 # governance site: real deploy values and the built pages
 governance/.deploy.env
 governance/deploy-out/
+
+# NAS jobs: real deploy values, and the rendered credentials/compose/build context
+nas-jobs/.deploy.env
+nas-jobs/deploy-out/

@@ -1,13 +1,18 @@
 """Gather the homelab's state into one JSON snapshot.
 
-Two tiers, because they cost different amounts:
+Three tiers, split by where the information exists:
 
-* ``--fast`` (seconds) — health, containers, deploy age, drift, backups, queues.
-* ``--slow`` (minutes) — test suites and outdated packages.
+* ``--live`` (seconds, runs ON THE NAS in the homelab-jobs container) — health
+  probes, queue depths, backup age, vault counts and vault health. Everything
+  that needs only the network, so it keeps running when the Mac is shut.
+* ``--fast`` (seconds, runs on the Mac) — container state, the commit each image
+  was built from versus the repo's, shipped-config drift, vault destination.
+  These compare the NAS with source that exists only on the Mac.
+* ``--slow`` (minutes, Mac) — test suites, outdated packages, line counts.
 
-A slow run *merges* into the existing snapshot instead of replacing it, so the
-cached test results survive the next fast run and vice versa. Every section
-carries its own ``collected_at`` for the same reason: a page that cannot tell
+Each tier writes its own file and the reader merges them, so no run can
+overwrite another's results. Every section carries its own ``collected_at`` for
+the same reason: a page that cannot tell
 "healthy" from "not checked since Tuesday" is worse than no page, because it
 converts an unknown into a reassurance.
 
@@ -28,6 +33,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.request
 from datetime import UTC, datetime
@@ -46,6 +52,15 @@ STATUS_DIR = Path(os.environ.get("HOMELAB_STATUS_DIR", Path.home() / ".homelab" 
 #: gone within a minute. Separate files cannot race; the reader merges them.
 FAST_FILE = STATUS_DIR / "fast.json"
 SLOW_FILE = STATUS_DIR / "slow.json"
+#: Written by the NAS; on the Mac this is a copy pulled by `--pull`.
+LIVE_FILE = STATUS_DIR / "live.json"
+#: What the nightly vault-doctor pass found. Scanning the vault parses all of it
+#: (~170 MB resident even paged), so the live tier reads this rather than
+#: scanning every 30 minutes.
+VAULT_HEALTH_FILE = Path(os.environ.get("HOMELAB_VAULT_HEALTH_FILE", STATUS_DIR / "vault-health.json"))
+VAULT_HEALTH_STALE_HOURS = 36
+#: Where `--pull` finds the NAS side's output.
+JOBS_ENV = Path(__file__).resolve().parent.parent / "nas-jobs" / ".deploy.env"
 SNAPSHOT = FAST_FILE  # what --print and the renderer report as the source
 
 #: Health probes. Generous on purpose: vault-ask re-ingests the whole vault when
@@ -123,18 +138,28 @@ def _get_json(
     if host_header:
         headers["Host"] = host_header
     req = urllib.request.Request(url, headers=headers)
-    try:
-        with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as r:
-            body = r.read().decode()
-            # A 200 with an empty body is a bare liveness ping, not a parse
-            # failure — homelab-auth's /healthz is exactly this (see its
-            # README: "always 200 if the process is up", no body). Treat it
-            # as an empty-but-successful payload rather than an error.
-            return (json.loads(body) if body.strip() else {}), None
-    except urllib.error.HTTPError as exc:
-        return None, f"HTTP {exc.code}"
-    except Exception as exc:  # noqa: BLE001 - any failure is just an unhealthy row
-        return None, f"{type(exc).__name__}"
+    err = "unknown"
+    # One retry for connection-level failures only. The macvlan LAN-IP targets
+    # (homelab-auth, video-digest) are reached from a bridge container through
+    # the host, and the first connection after an idle spell can fail while an
+    # immediate second one succeeds; an HTTP error status is a real answer and
+    # is never retried.
+    for attempt in (1, 2):
+        try:
+            with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as r:
+                body = r.read().decode()
+                # A 200 with an empty body is a bare liveness ping, not a parse
+                # failure — homelab-auth's /healthz is exactly this.
+                return (json.loads(body) if body.strip() else {}), None
+        except urllib.error.HTTPError as exc:
+            return None, f"HTTP {exc.code}"
+        except urllib.error.URLError as exc:
+            err = f"URLError: {exc.reason}"[:80]
+        except Exception as exc:  # noqa: BLE001 - any failure is just an unhealthy row
+            err = type(exc).__name__
+        if attempt == 1:
+            time.sleep(1.5)
+    return None, err
 
 
 # ── fast signals ─────────────────────────────────────────────────────────────
@@ -177,7 +202,7 @@ def probe_health(app: App) -> dict[str, Any]:
 
 def probe_extra(app: App) -> dict[str, Any]:
     """The richer endpoints: queue depths, job results, spend."""
-    url = registry.base_url(app)
+    url = registry.extra_base_url(app)
     if not url or not app.extra:
         return {}
     key = registry.app_env(app).get(app.auth_var) if app.auth_var else None
@@ -511,6 +536,8 @@ def vault_stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
 def vault() -> dict[str, Any]:
     """Document counts and the LiveSync pain signals."""
     env = registry.read_env(Path(__file__).resolve().parent.parent / ".env")
+    # The jobs container has no .env file; its credentials are in the environment.
+    env.update({k: os.environ[k] for k in ("VAULT_COUCHDB_URL", "VAULT_USER", "VAULT_COUCHDB_PASSWORD") if k in os.environ})
     url, user, pw = (
         env.get("VAULT_COUCHDB_URL"),
         env.get("VAULT_USER"),
@@ -563,6 +590,15 @@ def vault_health() -> dict[str, Any]:
     on. Fixing anything found here is still `./vault-doctor.py`'s own job,
     run on its own schedule.
     """
+    if VAULT_HEALTH_FILE.is_file():
+        try:
+            cached = json.loads(VAULT_HEALTH_FILE.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {"error": f"{VAULT_HEALTH_FILE.name} is unreadable"}
+        age_h = (datetime.now(UTC) - datetime.fromisoformat(cached.get("checked_at", "1970-01-01T00:00:00+00:00"))).total_seconds() / 3600
+        if age_h > VAULT_HEALTH_STALE_HOURS:
+            return {"error": f"the nightly vault-doctor scan is {age_h:.0f} h old — it has stopped running"}
+        return cached
     script = Path(__file__).resolve().parent.parent / "vault-doctor.py"
     if not script.is_file():
         return {"error": "vault-doctor.py not found"}
@@ -639,6 +675,8 @@ def code_stats(app: App) -> dict[str, Any]:
 def run_tests(app: App) -> dict[str, Any]:
     path = registry.repo_path(app)
     pytest = path / (app.venv or "") / "bin" / "pytest" if app.venv else None
+    if not app.venv:
+        return {"ran": False, "reason": "no test suite of its own"}
     if not pytest or not pytest.exists():
         return {"ran": False, "reason": "no local venv — not run here"}
     started = datetime.now(UTC)
@@ -680,7 +718,26 @@ def outdated(app: App) -> dict[str, Any]:
 # ── orchestration ────────────────────────────────────────────────────────────
 
 
+def collect_live() -> dict[str, Any]:
+    """The signals that need only the network. Runs on the NAS."""
+
+    def one(app: App) -> tuple[str, dict[str, Any]]:
+        return app.name, {"health": probe_health(app), "extra": probe_extra(app)}
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+        apps = dict(pool.map(one, APPS))
+
+    return {
+        "collected_at": now(),
+        "apps": apps,
+        "backups": backups(),
+        "vault": vault(),
+        "vault_health": vault_health(),
+    }
+
+
 def collect_fast() -> dict[str, Any]:
+    """What can only be known by comparing the NAS with source on this Mac."""
     first = APPS[0]
     target = registry.ssh_target(first)
     host, port = target if target else ("", "22")
@@ -692,8 +749,6 @@ def collect_fast() -> dict[str, Any]:
     def one(app: App) -> tuple[str, dict[str, Any]]:
         box = boxes.get(app.container, {}) if isinstance(boxes, dict) else {}
         return app.name, {
-            "health": probe_health(app),
-            "extra": probe_extra(app),
             "container": box or {"state": "absent"},
             "revision": deployed_revision(app, box, labels),
             "repo": repo_state(app),
@@ -708,13 +763,28 @@ def collect_fast() -> dict[str, Any]:
     with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
         apps = dict(pool.map(one, APPS))
 
-    return {
-        "collected_at": now(),
-        "apps": apps,
-        "backups": backups(),
-        "vault": vault(),
-        "vault_health": vault_health(),
-    }
+    return {"collected_at": now(), "apps": apps}
+
+
+def pull_live() -> str | None:
+    """Copy the NAS's live.json here. Returns an error string, or None on success."""
+    env = registry.read_env(JOBS_ENV)
+    host, port, home = env.get("NAS_SSH"), env.get("NAS_SSH_PORT", "22"), env.get("NAS_APP_DIR")
+    if not (host and home):
+        return "nas-jobs/.deploy.env is not configured"
+    rc, out = _run(
+        ["ssh", "-p", port, "-o", "BatchMode=yes", "-o", f"ConnectTimeout={HTTP_TIMEOUT}", host,
+         f"cat '{home}/data/live.json'"],
+        timeout=SSH_TIMEOUT,
+    )
+    if rc != 0:
+        return out.strip()[:200] or f"ssh exit {rc}"
+    try:
+        payload = json.loads(out)
+    except ValueError:
+        return "live.json on the NAS is not valid JSON"
+    _write(LIVE_FILE, payload)
+    return None
 
 
 def collect_slow() -> dict[str, Any]:
@@ -756,12 +826,35 @@ def _write(path: Path, payload: dict[str, Any]) -> None:
     tmp.replace(path)
 
 
+#: Keys that only the NAS-side live tier writes at the top level.
+_LIVE_TOP = ("backups", "vault", "vault_health")
+
+
 def load() -> dict[str, Any]:
-    """Both tiers, merged for reading. Either may be missing or older."""
+    """All tiers, merged for reading. Any may be missing or older.
+
+    `fast` is the live tier laid over the Mac's deploy-check tier, per app: the
+    live tier wins for what it measures (health, queues, backups, vault) and the
+    Mac tier supplies what only it can (container state, revision, drift).
+    `collected_at` is the live tier's, since that is the one that goes stale when
+    something stops; the deploy checks keep their own in `deploy_collected_at`.
+    Before the first live run exists the Mac tier stands alone, as it used to.
+    """
     out: dict[str, Any] = {}
-    if fast := _read(FAST_FILE):
+    mac, live, slow = _read(FAST_FILE), _read(LIVE_FILE), _read(SLOW_FILE)
+    if mac or live:
+        apps: dict[str, Any] = {}
+        for name in {*(mac.get("apps") or {}), *(live.get("apps") or {})}:
+            apps[name] = {**(mac.get("apps") or {}).get(name, {}), **(live.get("apps") or {}).get(name, {})}
+        fast = {**mac, "apps": apps}
+        fast["deploy_collected_at"] = mac.get("collected_at")
+        if live:
+            fast["collected_at"] = live.get("collected_at")
+            for key in _LIVE_TOP:
+                if key in live:
+                    fast[key] = live[key]
         out["fast"] = fast
-    if slow := _read(SLOW_FILE):
+    if slow:
         out["slow"] = slow
     return out
 
@@ -788,14 +881,23 @@ def _lock(tier: str):
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--fast", action="store_true", help="health, containers, drift, backups")
+    ap.add_argument("--live", action="store_true", help="health, queues, backups, vault (the NAS runs this)")
+    ap.add_argument("--pull", action="store_true", help="copy the NAS's live.json here")
+    ap.add_argument("--fast", action="store_true", help="containers, revisions, config drift")
     ap.add_argument("--slow", action="store_true", help="test suites and outdated packages")
     args = ap.parse_args()
-    if not (args.fast or args.slow):
+    if targets := os.environ.get("HOMELAB_TARGETS"):
+        registry.load_targets(Path(targets))
+    if args.pull:
+        error = pull_live()
+        print("pulled live.json" if error is None else f"pull failed: {error}")
+        return 0 if error is None else 1
+    if not (args.live or args.fast or args.slow):
         args.fast = True
 
     written = []
     for tier, enabled, gather, target in (
+        ("live", args.live, collect_live, LIVE_FILE),
         ("fast", args.fast, collect_fast, FAST_FILE),
         ("slow", args.slow, collect_slow, SLOW_FILE),
     ):

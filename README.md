@@ -487,40 +487,40 @@ cd homelab && ./backup-vault.sh                 # the_brain -> $VAULT_BACKUP_DIR
 cd homelab && VAULT_DB=hobby ./backup-vault.sh   # hobby -> the same dir
 ```
 
-`VAULT_DB` defaults to `the_brain` from `.env`, but a pre-exported `VAULT_DB`
-(as the hobby LaunchAgent below sets) wins over `.env`'s value — both
-databases share the same server and admin credentials, so only the database
-name needs to differ between the two scheduled runs.
+Since 2026-10-03 this runs **on the NAS**, in the `homelab-jobs` container
+([`nas-jobs/`](nas-jobs/README.md)), not from the Mac. The Mac version ran only
+while the laptop was awake, and a backup that silently skips nights is the worst
+kind. The script is unchanged in what it does — `_all_docs?include_docs=true&attachments=true`,
+gzip, verified before the file is published, 14 kept per database — but it now
+verifies by streaming (`gzip -t`, then the `total_rows` header and the closing
+`]}`) instead of parsing a 60 MB JSON in Python, which would not fit the NAS's
+memory.
 
-Deliberately run from the Mac, not the NAS: the vault's CouchDB is
-LAN-reachable directly (unlike podcast-digest's own state DB, which is
-loopback-only on purpose), so the dump is created off the NAS from the start
-— a single NAS disk failure can't take out the live data and its backup
-together. `_all_docs?include_docs=true&attachments=true`, gzip, verified
-non-empty and JSON-valid before the file is published, 14 kept by default.
-Output lands outside the iCloud-synced vault folder (`~/Backups/vault-couchdb`
-by default) — it's an archive, not a live synced folder, and mixing the two
-would risk exactly the kind of sync confusion the section above exists to
-avoid.
-
-Scheduled nightly via two LaunchAgents rather than NAS cron, for the same
-off-NAS reasoning — 15 minutes apart so the two runs don't hit CouchDB at
-once:
-
-| db | LaunchAgent | time |
+| db | job | time |
 |---|---|---|
-| `the_brain` | `com.homelab.vault-backup.plist` | 03:30 |
-| `hobby` | `com.homelab.vault-backup-hobby.plist` | 03:45 |
+| `the_brain` | `backup-the_brain` | 03:30 |
+| `hobby` | `backup-hobby` | 03:45 |
 
-`launchctl list | grep homelab` to check both are loaded, `launchctl start
-com.homelab.vault-backup` (or `-hobby`) to run either on demand. Only fires
-while the Mac is awake; a Mac that's reliably asleep overnight needs either a
-different schedule or `pmset` wake configuration, not covered here yet.
+Dumps land on a different NAS volume (`JOBS_BACKUP_DIR` in `nas-jobs/.deploy.env`,
+on `CACHEDEV3_DATA`) from the live CouchDB (`CACHEDEV1_DATA`). **That is a
+different filesystem, not necessarily a different physical disk** — whether the
+volumes share drives has not been checked. The Mac's old dumps in
+`~/Backups/vault-couchdb` are the only off-NAS copy; they stop growing now. If
+you want a real off-NAS copy again, pull the newest dump from the NAS on a
+schedule you control.
+
+```sh
+nas-jobs/deploy run backup-the_brain    # run one now
+nas-jobs/deploy check                   # newest backup per database, and its age
+```
+
+A container that was down at 03:30 catches up when it starts rather than
+waiting a day.
 
 ## Vault health checks
 
-`vault-doctor.py` walks the whole vault daily (`com.homelab.vault-doctor`,
-04:00, 15 minutes after the last backup) looking for damage the four apps'
+`vault-doctor.py` walks the whole vault daily (the `vault-doctor` job in
+`homelab-jobs`, 04:00, 15 minutes after the last backup) looking for damage the four apps'
 own bugs have produced — an empty note from a click on a dead `[[wikilink]]`,
 or two frontmatter lines with the same key from LiveSync's line-level merge
 duplicating one verbatim during a concurrent write (`podcast_agent/notes.py`
@@ -540,42 +540,50 @@ values are a real disagreement between writers (see the obsidian-vault-writer
 skill, "leave both, where a human can see them"), and two topic notes whose
 basenames differ only by punctuation or case (`threat-locker.md` next to
 `threatlocker.md`) may have already accumulated genuinely different content
-under each. Logs to `~/.homelab/logs/vault-doctor.log`.
+under each. It pages through `_all_docs` 500 at a time (peak ~170 MB; the
+old read-everything version peaked at 520 MB and would not fit on the NAS). Its
+log is the container's: `nas-jobs/deploy logs`.
 
-`status.sh`'s fast collector also runs it (`--json`, always read-only —
-fixing is left to the scheduled job above, never to a dashboard refresh) and
-surfaces anything found in the "worth attention" list on `status.html` and
-`--print`. A stub or an exact-duplicate frontmatter key shows as a `warn`
-that says it self-heals by the next scheduled run; a value conflict or a
-near-duplicate topic pair shows as a `warn` that names the note(s) and stays
-until a person resolves it — vault-doctor never touches either.
+The same nightly job records its findings in `vault-health.json`, and the status
+page surfaces anything found in the "worth attention" list. A stub or an
+exact-duplicate frontmatter key shows as a `warn` that says it self-heals by the
+next scheduled run; a value conflict or a near-duplicate topic pair shows as a
+`warn` that names the note(s) and stays until a person resolves it —
+vault-doctor never touches either. Findings older than 36 h are drawn as stale.
 
 ## Is everything fine?
 
-`./status.sh` answers that in one place, from the Mac. It collects into
-`~/.homelab/status/snapshot.json` and renders `status.html` beside it.
+The answer is a page on the NAS, `https://<governance host>/`, behind the same
+login as the apps, plus `./status.sh` for the terminal. The work is split by
+what each side can see:
+
+- **NAS** (`homelab-jobs`, every 30 min): each app's health endpoint and
+  queues, backup ages, the vault's document counts. Anything that needs only the
+  network. It renders the page itself, so the page refreshes while the Mac is
+  asleep.
+- **Mac** (`com.homelab.status-fast`, every 30 min; `status-slow`, daily 04:00):
+  what exists only here — container state and restart counts, how far the running
+  image is behind the repo, config drift (all via the NAS docker socket), plus
+  test suites, unpushed work and outdated packages. Each run pushes its snapshot
+  to the NAS so the page includes it.
 
 ```sh
-./status.sh            # collect the fast signals, render, print the summary
+./status.sh            # Mac checks, push to the NAS, pull live signals, print
 ./status.sh --slow     # test suites and outdated packages (minutes)
-./status.sh --print    # the last snapshot, instantly, with no network
-./status.sh --publish  # push the governance site from the last snapshot
+./status.sh --print    # pull the NAS's live signals, print the summary
+./status.sh --publish  # push the Architecture and Models pages
 ```
-
-Two tiers, because they cost different amounts. **Fast** (~10 s, every 30 min
-via `com.homelab.status-fast`): each app's own health endpoint, container state
-and restart counts, how far the running image is behind the repo, config drift
-on the NAS, backup ages, and the vault's document counts, conflicts and
-duplicates. **Slow** (minutes, daily 04:00 via `com.homelab.status-slow`): every
-repo's test suite and its outdated packages, cached with its own timestamp.
 
 Three properties are deliberate, and each exists because of a specific way this
 kind of tool goes wrong:
 
-- **It runs on the Mac, and has to.** The source-side signals — tests, unpushed
-  work, outdated packages, the commit a running image was built from — exist
-  nowhere else, and the NAS host cannot reach its own macvlan children to probe
-  them. A collector on the NAS could not see half the board.
+- **The Mac still does what only it can.** Tests, unpushed work, outdated
+  packages and the commit a running image was built from exist nowhere else. The
+  jobs container deliberately has no `docker.sock`: it would be root-equivalent
+  on the NAS to save one ssh call, so container state stays a Mac-side signal.
+  The cost: while the Mac sleeps, container/revision rows go stale. The page
+  shows that age in its own "container & deploy checks" cell (stale at 8 h)
+  instead of letting a fresh health probe make them look current.
 - **Every section carries its own timestamp, and a stale one is drawn in red.**
   The failure mode of a dashboard is not being wrong, it is being old while
   looking current — turning "not checked since Tuesday" into a reassurance.
@@ -629,23 +637,26 @@ isn't one.
 
 ### Where the page lives: `governance/`
 
-Every collector run ends by publishing the pages to the NAS (`status.sh`'s
-`publish_governance`), where a read-only nginx container serves them behind
-Traefik's `homelabAuth-forward` — the same single login as the apps. The site
-has three pages: **Status** (this collector's snapshot), **Architecture**
-(hand-maintained board, `governance/content/`) and **Models** (the model ids
-read from each repo's `config.yaml`, checked against a hardware table, so a
-newly configured model that nobody assessed shows up as "not in table"). See
-[`governance/README.md`](governance/README.md).
+The NAS renders the **Status** page itself, from the jobs container's `live.json`
+merged with the Mac's pushed snapshots (`homelab-jobs` writes `site/index.html`;
+the governance nginx serves it from a read-only `live` mount). The Mac publishes
+only **Architecture** (hand-maintained board, `governance/content/`) and
+**Models** (the model ids read from each repo's `config.yaml`, checked against a
+hardware table, so a newly configured model that nobody assessed shows up as
+"not in table"), after the daily slow run. All behind Traefik's
+`homelabAuth-forward` — the same single login as the apps. See
+[`governance/README.md`](governance/README.md) and
+[`nas-jobs/README.md`](nas-jobs/README.md).
 
 ### What it cannot do
 
-**The page is only as fresh as the last collector run, and says so.** The Mac
-collector is the sole source, so if the Mac is asleep or the publish fails the
-site keeps serving the last pages. Every age on them is recomputed in the
-browser against the viewer's clock, and a red banner appears when the snapshot
-is older than its stale threshold — so "the collector stopped" reads as stopped,
-not as healthy. `./status.sh --print` is the always-fresh view.
+**The page is only as fresh as its sources, and says so.** Every age on it is
+recomputed in the browser against the viewer's clock, and a red banner appears
+when a section is older than its stale threshold — so "the collector stopped"
+reads as stopped, not as healthy. `./status.sh --print` pulls the NAS's live
+signals first, so it is the always-fresh terminal view. If the `homelab-jobs`
+container itself dies, the page stops refreshing and goes red; `nas-jobs/deploy
+check` is the direct test.
 
 
 ## The Obsidian vault
